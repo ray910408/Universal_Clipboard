@@ -802,10 +802,11 @@ identity, relay authentication, recovery, abuse controls, retention, and deletio
 
 ## The Assignment
 
-Before implementation, record at least five real Windows-to-iPhone text transfers
+Before public release, record at least five real Windows-to-iPhone text transfers
 over one normal day: source application, approximate text size, whether the content
 was sensitive, and where it was pasted. These examples become the first manual test
-set.
+set. Implementation may begin earlier because the user explicitly approved immediate
+Subagent-Driven Development on 2026-06-11; observations must not be invented.
 
 ## What I Noticed About How You Think
 
