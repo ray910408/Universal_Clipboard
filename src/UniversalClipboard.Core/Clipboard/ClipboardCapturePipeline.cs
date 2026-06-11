@@ -33,6 +33,7 @@ public enum ClipboardCaptureOutcome
     Empty,
     InvalidUtf16,
     OverLimit,
+    RejectedReadStatus,
 }
 
 public sealed record ClipboardCaptureResult(
@@ -80,14 +81,16 @@ public sealed class ClipboardCapturePipeline
     {
         ArgumentNullException.ThrowIfNull(readResult);
 
-        if (readResult.Status == ClipboardReadStatus.NoUnicodeText)
+        switch (readResult.Status)
         {
-            return Result(ClipboardCaptureOutcome.NoUnicodeText);
-        }
-
-        if (readResult.Status == ClipboardReadStatus.Failed)
-        {
-            return Result(ClipboardCaptureOutcome.ReadFailed);
+            case ClipboardReadStatus.Success:
+                break;
+            case ClipboardReadStatus.NoUnicodeText:
+                return Result(ClipboardCaptureOutcome.NoUnicodeText);
+            case ClipboardReadStatus.Failed:
+                return Result(ClipboardCaptureOutcome.ReadFailed);
+            default:
+                return Result(ClipboardCaptureOutcome.RejectedReadStatus);
         }
 
         var text = readResult.Text

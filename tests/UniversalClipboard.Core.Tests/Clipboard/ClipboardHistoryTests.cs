@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using FluentAssertions;
 using UniversalClipboard.Core.Clipboard;
 
@@ -80,5 +81,93 @@ public sealed class ClipboardHistoryTests
 
         original.Version.Should().Be(1);
         original.Items.Select(item => item.Text).Should().Equal("one");
+    }
+
+    [Fact]
+    public async Task Concurrent_readers_and_writers_observe_consistent_bounded_snapshots()
+    {
+        const int writerCount = 8;
+        const int addsPerWriter = 2_000;
+        const int readerCount = 4;
+        const int readsPerReader = 8_000;
+
+        var history = new ClipboardHistory();
+        var failures = new ConcurrentQueue<string>();
+        using var start = new ManualResetEventSlim();
+
+        var writers = Enumerable.Range(0, writerCount)
+            .Select(writer => Task.Run(() =>
+            {
+                start.Wait();
+
+                for (var index = 0; index < addsPerWriter; index++)
+                {
+                    try
+                    {
+                        var result = history.Add($"{writer}:{index}");
+                        ValidateSnapshot(result.Snapshot, failures);
+
+                        if (!result.Snapshot.Items.Contains(result.AddedItem))
+                        {
+                            failures.Enqueue("Add result snapshot did not contain its added item.");
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        failures.Enqueue(exception.ToString());
+                    }
+                }
+            }))
+            .ToArray();
+
+        var readers = Enumerable.Range(0, readerCount)
+            .Select(_ => Task.Run(() =>
+            {
+                start.Wait();
+
+                for (var index = 0; index < readsPerReader; index++)
+                {
+                    try
+                    {
+                        ValidateSnapshot(history.Snapshot, failures);
+                    }
+                    catch (Exception exception)
+                    {
+                        failures.Enqueue(exception.ToString());
+                    }
+                }
+            }))
+            .ToArray();
+
+        start.Set();
+        await Task.WhenAll(writers.Concat(readers));
+
+        failures.Should().BeEmpty();
+        history.Snapshot.Version.Should().Be((ulong)(writerCount * addsPerWriter));
+        history.Snapshot.Items.Should().HaveCount(ClipboardHistory.Capacity);
+    }
+
+    private static void ValidateSnapshot(
+        ClipboardSnapshot snapshot,
+        ConcurrentQueue<string> failures)
+    {
+        if (snapshot.Items.Length > ClipboardHistory.Capacity)
+        {
+            failures.Enqueue($"Snapshot contained {snapshot.Items.Length} items.");
+        }
+
+        if (snapshot.Items.Select(item => item.Id).Distinct().Count() != snapshot.Items.Length)
+        {
+            failures.Enqueue("Snapshot contained duplicate item IDs.");
+        }
+
+        var expectedItemCount = (int)Math.Min(
+            snapshot.Version,
+            (ulong)ClipboardHistory.Capacity);
+        if (snapshot.Items.Length != expectedItemCount)
+        {
+            failures.Enqueue(
+                $"Version {snapshot.Version} snapshot contained {snapshot.Items.Length} items.");
+        }
     }
 }

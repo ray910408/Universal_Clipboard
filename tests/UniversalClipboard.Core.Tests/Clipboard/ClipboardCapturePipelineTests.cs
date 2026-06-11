@@ -48,6 +48,25 @@ public sealed class ClipboardCapturePipelineTests
         pipeline.HistorySnapshot.Items.Should().HaveCount(1);
     }
 
+    [Fact]
+    public void Unknown_read_status_is_rejected_without_updating_previous_text()
+    {
+        var pipeline = new ClipboardCapturePipeline();
+        var original = pipeline.Capture(ClipboardReadResult.Success("before"));
+        var unknownRead = new ClipboardReadResult((ClipboardReadStatus)999, "unknown");
+
+        var rejected = pipeline.Capture(unknownRead);
+        var originalAgain = pipeline.Capture(ClipboardReadResult.Success("before"));
+
+        rejected.Outcome.Should().Be(ClipboardCaptureOutcome.RejectedReadStatus);
+        rejected.Item.Should().BeNull();
+        rejected.SensitiveRule.Should().BeNull();
+        rejected.EvictedItems.Should().BeEmpty();
+        originalAgain.Outcome.Should().Be(ClipboardCaptureOutcome.Duplicate);
+        pipeline.HistorySnapshot.Items.Should().Equal(original.Item!);
+        pipeline.PendingSnapshot.Items.Should().BeEmpty();
+    }
+
     [Theory]
     [MemberData(nameof(RejectedTextRows))]
     public void Empty_invalid_and_over_limit_text_update_previous(
