@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Universal Clipboard MVP Wireframe</title>
+  <style>
+    :root {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #222;
+      background: #f4f4f2;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 32px;
+    }
+
+    h1, h2, p {
+      margin-top: 0;
+    }
+
+    .note {
+      max-width: 900px;
+      color: #555;
+    }
+
+    .board {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(260px, 1fr));
+      gap: 24px;
+      align-items: start;
+      max-width: 1180px;
+    }
+
+    .frame {
+      min-height: 600px;
+      padding: 20px;
+      border: 2px solid #555;
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 5px 5px 0 #ccc;
+    }
+
+    .desktop {
+      border-radius: 6px;
+    }
+
+    .eyebrow {
+      margin-bottom: 8px;
+      color: #666;
+      font-size: 13px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .status {
+      display: inline-block;
+      margin-bottom: 18px;
+      padding: 5px 9px;
+      border: 1px solid #555;
+      border-radius: 999px;
+      font-size: 13px;
+    }
+
+    .qr {
+      display: grid;
+      place-items: center;
+      width: 150px;
+      height: 150px;
+      margin: 18px auto;
+      border: 2px dashed #666;
+      background:
+        linear-gradient(45deg, #ddd 25%, transparent 25%) 0 0 / 20px 20px,
+        linear-gradient(-45deg, #ddd 25%, transparent 25%) 0 0 / 20px 20px;
+      font-weight: 700;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 0;
+      border-top: 1px solid #bbb;
+    }
+
+    .card {
+      margin: 14px 0;
+      padding: 14px;
+      border: 1px solid #777;
+      border-radius: 8px;
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .content {
+      display: -webkit-box;
+      overflow: hidden;
+      margin-bottom: 12px;
+      color: #333;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 4;
+    }
+
+    button {
+      width: 100%;
+      padding: 11px 14px;
+      border: 2px solid #333;
+      border-radius: 6px;
+      background: #fff;
+      color: #111;
+      font: inherit;
+      font-weight: 700;
+    }
+
+    button.primary {
+      background: #222;
+      color: #fff;
+    }
+
+    .alert {
+      margin: 14px 0;
+      padding: 12px;
+      border: 2px solid #333;
+      background: #eee;
+    }
+
+    .selection {
+      padding: 14px;
+      border: 2px dashed #555;
+      background: #ddd;
+      line-height: 1.6;
+      user-select: all;
+    }
+
+    .small {
+      color: #666;
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .board {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h1>Windows → iPhone Clipboard MVP</h1>
+  <p class="note">低保真草圖：先確認核心流程與錯誤退化方式，不代表最終視覺設計。</p>
+
+  <main class="board">
+    <!-- Desktop control surface prioritizes connection and privacy state. -->
+    <section class="frame desktop">
+      <div class="eyebrow">Windows 托盤視窗</div>
+      <h2>Clipboard Bridge</h2>
+      <span class="status">● 區網服務執行中</span>
+
+      <h3>配對 iPhone</h3>
+      <div class="qr">QR CODE</div>
+      <p class="small">配對碼 01:42 後失效，只能使用一次。</p>
+      <button class="primary">產生新的配對碼</button>
+
+      <h3>已配對裝置</h3>
+      <div class="row"><span>iPhone Safari<br><small>剩餘 4 小時 52 分</small></span><button style="width:auto">撤銷</button></div>
+
+      <h3>待確認</h3>
+      <div class="alert">
+        <strong>疑似 API Key</strong>
+        <p class="small">sk-proj-••••••••9Fx</p>
+        <div class="row">
+          <button>不傳送</button>
+          <button class="primary">允許這一次</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Mobile inbox shows the latest item first and makes copy the primary action. -->
+    <section class="frame">
+      <div class="eyebrow">iPhone Safari</div>
+      <h2>最近複製</h2>
+      <span class="status">已配對 · 剩餘 4:52</span>
+
+      <article class="card">
+        <strong>剛剛</strong>
+        <div class="content">會議改到下午三點，連結維持不變。</div>
+        <button class="primary">複製到 iPhone</button>
+      </article>
+
+      <article class="card">
+        <strong>2 分鐘前</strong>
+        <div class="content">https://example.com/project/clipboard-mvp</div>
+        <button>複製到 iPhone</button>
+      </article>
+
+      <article class="card">
+        <strong>8 分鐘前</strong>
+        <div class="content">請把這段文字貼到備忘錄，確認跨裝置流程是否足夠快速。</div>
+        <button>複製到 iPhone</button>
+      </article>
+
+      <p class="small">頁面每秒更新。Windows 撤回後，項目會在下一次更新消失。</p>
+    </section>
+
+    <!-- HTTP Safari fallback must be explicit and must never fail silently. -->
+    <section class="frame">
+      <div class="eyebrow">複製退化狀態</div>
+      <h2>需要手動拷貝</h2>
+      <div class="alert">
+        Safari 未允許網頁直接寫入剪貼簿。下方文字已選取，請長按後點「拷貝」。
+      </div>
+
+      <div class="selection">
+        會議改到下午三點，連結維持不變。
+      </div>
+
+      <p class="small">不能顯示成功假象；只有確認寫入成功時才顯示「已複製」。</p>
+      <button>返回最近複製</button>
+    </section>
+  </main>
+</body>
+</html>
