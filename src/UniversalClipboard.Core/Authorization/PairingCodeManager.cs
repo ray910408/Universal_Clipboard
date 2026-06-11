@@ -1,0 +1,89 @@
+using System.Security.Cryptography;
+
+namespace UniversalClipboard.Core.Authorization;
+
+public interface IEntropySource
+{
+    void Fill(Span<byte> destination);
+}
+
+public sealed class CryptographicEntropySource : IEntropySource
+{
+    public static CryptographicEntropySource Shared { get; } = new();
+
+    private CryptographicEntropySource()
+    {
+    }
+
+    public void Fill(Span<byte> destination) => RandomNumberGenerator.Fill(destination);
+}
+
+public sealed class PairingCodeManager
+{
+    public const int EntropyByteCount = 24;
+    public static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(2);
+
+    private readonly object _gate = new();
+    private readonly TimeProvider _timeProvider;
+    private readonly IEntropySource _entropySource;
+    private ActivePairingCode? _activeCode;
+
+    public PairingCodeManager(
+        TimeProvider? timeProvider = null,
+        IEntropySource? entropySource = null)
+    {
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _entropySource = entropySource ?? CryptographicEntropySource.Shared;
+    }
+
+    public PairingCode Create()
+    {
+        Span<byte> bytes = stackalloc byte[EntropyByteCount];
+        _entropySource.Fill(bytes);
+
+        var value = Base64Url.Encode(bytes);
+        var expiresAtUtc = _timeProvider.GetUtcNow().ToUniversalTime() + Lifetime;
+
+        lock (_gate)
+        {
+            _activeCode = new ActivePairingCode(value, expiresAtUtc);
+        }
+
+        return new PairingCode(value, expiresAtUtc);
+    }
+
+    public bool TryConsume(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+
+        lock (_gate)
+        {
+            var activeCode = _activeCode;
+            if (activeCode is null)
+            {
+                return false;
+            }
+
+            if (_timeProvider.GetUtcNow() >= activeCode.ExpiresAtUtc ||
+                !FixedTimeEquals(value, activeCode.Value))
+            {
+                return false;
+            }
+
+            _activeCode = null;
+            return true;
+        }
+    }
+
+    private static bool FixedTimeEquals(string left, string right)
+    {
+        var leftBytes = System.Text.Encoding.UTF8.GetBytes(left);
+        var rightBytes = System.Text.Encoding.UTF8.GetBytes(right);
+        return CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
+    }
+
+    private sealed record ActivePairingCode(string Value, DateTimeOffset ExpiresAtUtc);
+}
