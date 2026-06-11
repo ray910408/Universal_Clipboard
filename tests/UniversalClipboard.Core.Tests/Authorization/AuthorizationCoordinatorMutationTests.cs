@@ -30,12 +30,15 @@ public sealed class AuthorizationCoordinatorMutationTests
             [IPAddress.Parse("192.168.1.10")]).AsTask();
         await saveStarted.Task;
 
-        coordinator.Snapshot.Authorizations.Should().Equal(current, stale);
+        coordinator.List().Should().Equal(
+            AuthorizationRecordFactory.Metadata(current),
+            AuthorizationRecordFactory.Metadata(stale));
         releaseSave.SetResult();
 
         var result = await removalTask;
         result.Succeeded.Should().BeTrue();
-        result.Snapshot.Authorizations.Should().Equal(current);
+        result.Snapshot.Authorizations.Should().Equal(
+            AuthorizationRecordFactory.Metadata(current));
     }
 
     [Fact]
@@ -51,7 +54,7 @@ public sealed class AuthorizationCoordinatorMutationTests
         var result = await coordinator.RemoveStaleBindingsAsync([]);
 
         result.Failure.Should().Be(AuthorizationFailure.PersistenceFailed);
-        coordinator.Snapshot.Authorizations.Should().Equal(record);
+        coordinator.List().Should().Equal(AuthorizationRecordFactory.Metadata(record));
     }
 
     [Fact]

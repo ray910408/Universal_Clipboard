@@ -15,8 +15,7 @@ public sealed class AuthorizationCoordinatorExchangeTests
 
         await using var coordinator = await CreateCoordinatorAsync(persistence);
 
-        coordinator.Snapshot.Authorizations.Should().Equal(record);
-        coordinator.List().Should().Equal(record);
+        coordinator.List().Should().Equal(AuthorizationRecordFactory.Metadata(record));
     }
 
     [Fact]
@@ -85,7 +84,7 @@ public sealed class AuthorizationCoordinatorExchangeTests
                 AuthorizationDuration.FiveHours));
         await saveStarted.Task;
 
-        coordinator.Snapshot.Authorizations.Should().BeEmpty();
+        coordinator.List().Should().BeEmpty();
         exchangeTask.IsCompleted.Should().BeFalse();
 
         releaseSave.SetResult();
@@ -94,9 +93,9 @@ public sealed class AuthorizationCoordinatorExchangeTests
         result.Succeeded.Should().BeTrue();
         result.Token.Should().NotBeNull();
         result.Authorization.Should().NotBeNull();
-        coordinator.Snapshot.Authorizations.Should().Equal(result.Authorization);
-        persistence.SavedDocument.Should().BeEquivalentTo(
-            new AuthorizationDocument([result.Authorization!]));
+        coordinator.List().Should().Equal(result.Authorization);
+        persistence.SavedDocument!.Authorizations.Should().ContainSingle(
+            authorization => authorization.Id == result.Authorization!.Id);
     }
 
     [Fact]
@@ -124,7 +123,7 @@ public sealed class AuthorizationCoordinatorExchangeTests
         failed.Authorization.Should().BeNull();
         failed.Token.Should().BeNull();
         retried.Failure.Should().Be(AuthorizationFailure.InvalidPairingCode);
-        coordinator.Snapshot.Authorizations.Should().Equal(existing);
+        coordinator.List().Should().Equal(AuthorizationRecordFactory.Metadata(existing));
     }
 
     [Fact]

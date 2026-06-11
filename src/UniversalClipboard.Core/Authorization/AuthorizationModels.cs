@@ -27,12 +27,27 @@ public sealed record AuthorizationDocument(
         new(ImmutableArray<AuthorizationRecord>.Empty);
 }
 
-public sealed record AuthorizationSnapshot(
-    ImmutableArray<AuthorizationRecord> Authorizations)
+internal sealed record AuthorizationStateSnapshot(
+    ImmutableArray<AuthorizationRecord> Authorizations);
+
+public sealed record AuthorizationMetadata(
+    Guid Id,
+    string Label,
+    DateTimeOffset CreatedAtUtc,
+    IPAddress BoundHostIpv4,
+    DateTimeOffset? ExpiresAtUtc)
 {
-    public static AuthorizationSnapshot Empty { get; } =
-        new(ImmutableArray<AuthorizationRecord>.Empty);
+    internal static AuthorizationMetadata FromRecord(AuthorizationRecord authorization) =>
+        new(
+            authorization.Id,
+            authorization.Label,
+            authorization.CreatedAtUtc,
+            authorization.BoundHostIpv4,
+            authorization.ExpiresAtUtc);
 }
+
+public sealed record AuthorizationAdministrationSnapshot(
+    ImmutableArray<AuthorizationMetadata> Authorizations);
 
 public enum AuthorizationFailure
 {
@@ -59,7 +74,7 @@ public sealed class ExchangeAuthorizationResult
 {
     private ExchangeAuthorizationResult(
         AuthorizationFailure failure,
-        AuthorizationRecord? authorization,
+        AuthorizationMetadata? authorization,
         SessionToken? token)
     {
         Failure = failure;
@@ -71,12 +86,15 @@ public sealed class ExchangeAuthorizationResult
 
     public AuthorizationFailure Failure { get; }
 
-    public AuthorizationRecord? Authorization { get; }
+    public AuthorizationMetadata? Authorization { get; }
 
     public SessionToken? Token { get; }
 
     internal static ExchangeAuthorizationResult Success(SessionTokenIssue issue) =>
-        new(AuthorizationFailure.None, issue.Authorization, issue.Token);
+        new(
+            AuthorizationFailure.None,
+            AuthorizationMetadata.FromRecord(issue.Authorization),
+            issue.Token);
 
     internal static ExchangeAuthorizationResult Failed(AuthorizationFailure failure) =>
         new(failure, null, null);
@@ -110,7 +128,7 @@ public sealed class AuthorizationMutationResult
 {
     internal AuthorizationMutationResult(
         AuthorizationFailure failure,
-        AuthorizationSnapshot snapshot)
+        AuthorizationAdministrationSnapshot snapshot)
     {
         Failure = failure;
         Snapshot = snapshot;
@@ -120,7 +138,7 @@ public sealed class AuthorizationMutationResult
 
     public AuthorizationFailure Failure { get; }
 
-    public AuthorizationSnapshot Snapshot { get; }
+    public AuthorizationAdministrationSnapshot Snapshot { get; }
 }
 
 public sealed class AuthorizationLease : IDisposable

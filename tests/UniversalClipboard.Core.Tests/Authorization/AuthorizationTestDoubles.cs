@@ -34,12 +34,12 @@ internal sealed class QueueEntropySource(params byte[][] values) : IEntropySourc
 
 internal sealed class FakeAuthorizationPersistence : IAuthorizationPersistence
 {
-    private readonly AuthorizationDocument _loadedDocument;
+    private AuthorizationDocument _document;
     private readonly ConcurrentQueue<AuthorizationDocument> _saveAttempts = new();
 
     public FakeAuthorizationPersistence(AuthorizationDocument? loadedDocument = null)
     {
-        _loadedDocument = loadedDocument ?? AuthorizationDocument.Empty;
+        _document = loadedDocument ?? AuthorizationDocument.Empty;
     }
 
     public Func<AuthorizationDocument, CancellationToken, Task>? OnSaveAsync { get; init; }
@@ -49,7 +49,7 @@ internal sealed class FakeAuthorizationPersistence : IAuthorizationPersistence
     public AuthorizationDocument? SavedDocument { get; private set; }
 
     public Task<AuthorizationDocument> LoadAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult(_loadedDocument);
+        Task.FromResult(_document);
 
     public async Task SaveAsync(
         AuthorizationDocument document,
@@ -62,6 +62,7 @@ internal sealed class FakeAuthorizationPersistence : IAuthorizationPersistence
             await OnSaveAsync(document, cancellationToken);
         }
 
+        _document = document;
         SavedDocument = document;
     }
 }
@@ -87,4 +88,12 @@ internal static class AuthorizationRecordFactory
             expiresAtUtc ?? Now.AddHours(5),
             ImmutableArray.Create(SHA256.HashData(tokenBytes)));
     }
+
+    public static AuthorizationMetadata Metadata(AuthorizationRecord authorization) =>
+        new(
+            authorization.Id,
+            authorization.Label,
+            authorization.CreatedAtUtc,
+            authorization.BoundHostIpv4,
+            authorization.ExpiresAtUtc);
 }

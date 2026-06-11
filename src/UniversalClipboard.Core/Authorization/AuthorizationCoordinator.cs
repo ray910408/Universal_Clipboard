@@ -5,7 +5,10 @@ using System.Threading.Channels;
 
 namespace UniversalClipboard.Core.Authorization;
 
-public sealed class AuthorizationCoordinator : IAuthorizationService, IAsyncDisposable
+public sealed class AuthorizationCoordinator :
+    IAuthorizationService,
+    IAuthorizationAdministration,
+    IAsyncDisposable
 {
     private readonly IAuthorizationPersistence _persistence;
     private readonly PairingCodeManager _pairingCodes;
@@ -18,7 +21,7 @@ public sealed class AuthorizationCoordinator : IAuthorizationService, IAsyncDisp
     private readonly Channel<ICommand> _commands;
     private readonly Task _worker;
     private AuthorizationDocument _document;
-    private AuthorizationSnapshot _snapshot;
+    private AuthorizationStateSnapshot _snapshot;
     private int _disposeStarted;
 
     private AuthorizationCoordinator(
@@ -33,7 +36,7 @@ public sealed class AuthorizationCoordinator : IAuthorizationService, IAsyncDisp
         _tokenService = tokenService;
         _timeProvider = timeProvider;
         _document = document;
-        _snapshot = new AuthorizationSnapshot(document.Authorizations);
+        _snapshot = new AuthorizationStateSnapshot(document.Authorizations);
         _commands = Channel.CreateUnbounded<ICommand>(
             new UnboundedChannelOptions
             {
@@ -43,8 +46,6 @@ public sealed class AuthorizationCoordinator : IAuthorizationService, IAsyncDisp
             });
         _worker = Task.Run(ProcessCommandsAsync);
     }
-
-    public AuthorizationSnapshot Snapshot => Volatile.Read(ref _snapshot);
 
     public static async ValueTask<AuthorizationCoordinator> CreateAsync(
         IAuthorizationPersistence persistence,
@@ -68,7 +69,8 @@ public sealed class AuthorizationCoordinator : IAuthorizationService, IAsyncDisp
             document);
     }
 
-    public ImmutableArray<AuthorizationRecord> List() => Snapshot.Authorizations;
+    public ImmutableArray<AuthorizationMetadata> List() =>
+        CreateAdministrationSnapshot().Authorizations;
 
     public ValueTask<ExchangeAuthorizationResult> ExchangeAsync(
         ExchangeAuthorizationRequest request,
@@ -388,7 +390,7 @@ public sealed class AuthorizationCoordinator : IAuthorizationService, IAsyncDisp
         CancellationToken cancellationToken) =>
         EnqueueAsync(
             operation,
-            failure => new AuthorizationMutationResult(failure, Snapshot),
+            failure => new AuthorizationMutationResult(failure, CreateAdministrationSnapshot()),
             cancellationToken);
 
     private ValueTask<T> EnqueueAsync<T>(
@@ -435,15 +437,21 @@ public sealed class AuthorizationCoordinator : IAuthorizationService, IAsyncDisp
         lock (_leaseGate)
         {
             _document = document;
-            Volatile.Write(ref _snapshot, new AuthorizationSnapshot(document.Authorizations));
+            Volatile.Write(ref _snapshot, new AuthorizationStateSnapshot(document.Authorizations));
         }
     }
 
     private AuthorizationMutationResult MutationSucceeded() =>
-        new(AuthorizationFailure.None, Snapshot);
+        new(AuthorizationFailure.None, CreateAdministrationSnapshot());
 
     private AuthorizationMutationResult MutationFailed(AuthorizationFailure failure) =>
-        new(failure, Snapshot);
+        new(failure, CreateAdministrationSnapshot());
+
+    private AuthorizationAdministrationSnapshot CreateAdministrationSnapshot() =>
+        new(
+            Volatile.Read(ref _snapshot).Authorizations
+                .Select(AuthorizationMetadata.FromRecord)
+                .ToImmutableArray());
 
     private interface ICommand
     {

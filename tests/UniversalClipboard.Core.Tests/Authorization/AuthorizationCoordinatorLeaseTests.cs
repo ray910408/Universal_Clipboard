@@ -37,7 +37,7 @@ public sealed class AuthorizationCoordinatorLeaseTests
 
         expired.Failure.Should().Be(AuthorizationFailure.Expired);
         await WaitUntilAsync(() => persistence.SaveAttempts.Count == 1);
-        coordinator.Snapshot.Authorizations.Should().BeEmpty();
+        coordinator.List().Should().BeEmpty();
     }
 
     [Fact]
@@ -88,14 +88,14 @@ public sealed class AuthorizationCoordinatorLeaseTests
         lease.Dispose();
         await saveStarted.Task;
 
-        coordinator.Snapshot.Authorizations.Should().Equal(record);
+        coordinator.List().Should().Equal(AuthorizationRecordFactory.Metadata(record));
         revokeTask.IsCompleted.Should().BeFalse();
 
         releaseSave.SetResult();
         var result = await revokeTask;
 
         result.Succeeded.Should().BeTrue();
-        coordinator.Snapshot.Authorizations.Should().BeEmpty();
+        coordinator.List().Should().BeEmpty();
     }
 
     [Fact]
@@ -123,7 +123,7 @@ public sealed class AuthorizationCoordinatorLeaseTests
         var result = await revokeTask;
 
         result.Failure.Should().Be(AuthorizationFailure.PersistenceFailed);
-        coordinator.Snapshot.Authorizations.Should().Equal(record);
+        coordinator.List().Should().Equal(AuthorizationRecordFactory.Metadata(record));
         using var restoredLease = coordinator.AcquireLease(
             new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease;
         restoredLease.Should().NotBeNull();
@@ -145,6 +145,31 @@ public sealed class AuthorizationCoordinatorLeaseTests
         result.Succeeded.Should().BeTrue();
         result.Snapshot.Authorizations.Should().BeEmpty();
         persistence.SavedDocument!.Authorizations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Successful_revoke_survives_restart_and_old_token_cannot_acquire()
+    {
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var record = AuthorizationRecordFactory.Create();
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+
+        await using (var coordinator = await CreateCoordinatorAsync(persistence))
+        {
+            var result = await coordinator.RevokeAsync(record.Id);
+
+            result.Succeeded.Should().BeTrue();
+        }
+
+        persistence.SavedDocument!.Authorizations.Should().NotContain(
+            authorization => authorization.Id == record.Id);
+
+        await using var restarted = await CreateCoordinatorAsync(persistence);
+        var acquisition = restarted.AcquireLease(
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback));
+
+        acquisition.Succeeded.Should().BeFalse();
+        acquisition.Failure.Should().Be(AuthorizationFailure.NotFound);
     }
 
     private static ValueTask<AuthorizationCoordinator> CreateCoordinatorAsync(
