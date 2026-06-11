@@ -104,49 +104,52 @@ public sealed class ClipboardCapturePipelineTests
     }
 
     [Fact]
-    public void Discard_does_not_clear_previous_text()
+    public void Discard_does_not_replace_previous_text_with_discarded_item()
     {
         var pipeline = new ClipboardCapturePipeline();
-        var text = $"ghp_{new string('B', 36)}";
-        var captured = pipeline.Capture(ClipboardReadResult.Success(text));
+        var pendingText = $"ghp_{new string('A', 36)}";
+        var pending = pipeline.Capture(ClipboardReadResult.Success(pendingText));
+        pipeline.Capture(ClipboardReadResult.Success("current"));
 
-        var discarded = pipeline.Discard(captured.Item!.Id);
-        var repeated = pipeline.Capture(ClipboardReadResult.Success(text));
+        var discarded = pipeline.Discard(pending.Item!.Id);
+        var currentAgain = pipeline.Capture(ClipboardReadResult.Success("current"));
 
         discarded.Found.Should().BeTrue();
-        repeated.Outcome.Should().Be(ClipboardCaptureOutcome.Duplicate);
+        currentAgain.Outcome.Should().Be(ClipboardCaptureOutcome.Duplicate);
         pipeline.PendingSnapshot.Items.Should().BeEmpty();
     }
 
     [Fact]
-    public void Allow_moves_same_item_to_shared_history_without_clearing_previous()
+    public void Allow_does_not_replace_previous_text_with_allowed_item()
     {
         var pipeline = new ClipboardCapturePipeline();
-        var text = $"AKIA{new string('7', 16)}";
-        var captured = pipeline.Capture(ClipboardReadResult.Success(text));
+        var pendingText = $"AKIA{new string('7', 16)}";
+        var pending = pipeline.Capture(ClipboardReadResult.Success(pendingText));
+        var current = pipeline.Capture(ClipboardReadResult.Success("current"));
 
-        var allowed = pipeline.Allow(captured.Item!.Id);
-        var repeated = pipeline.Capture(ClipboardReadResult.Success(text));
+        var allowed = pipeline.Allow(pending.Item!.Id);
+        var currentAgain = pipeline.Capture(ClipboardReadResult.Success("current"));
 
         allowed.Found.Should().BeTrue();
-        allowed.Item.Should().Be(captured.Item);
-        pipeline.HistorySnapshot.Items.Should().Equal(captured.Item);
+        allowed.Item.Should().Be(pending.Item);
+        pipeline.HistorySnapshot.Items.Should().Equal(pending.Item!, current.Item!);
         pipeline.PendingSnapshot.Items.Should().BeEmpty();
-        repeated.Outcome.Should().Be(ClipboardCaptureOutcome.Duplicate);
+        currentAgain.Outcome.Should().Be(ClipboardCaptureOutcome.Duplicate);
     }
 
     [Fact]
-    public void Withdraw_does_not_clear_previous_text()
+    public void Withdraw_does_not_replace_previous_text_with_withdrawn_item()
     {
         var pipeline = new ClipboardCapturePipeline();
-        var captured = pipeline.Capture(ClipboardReadResult.Success("shared"));
+        var older = pipeline.Capture(ClipboardReadResult.Success("older"));
+        var current = pipeline.Capture(ClipboardReadResult.Success("current"));
 
-        var withdrawn = pipeline.Withdraw(captured.Item!.Id);
-        var repeated = pipeline.Capture(ClipboardReadResult.Success("shared"));
+        var withdrawn = pipeline.Withdraw(older.Item!.Id);
+        var currentAgain = pipeline.Capture(ClipboardReadResult.Success("current"));
 
         withdrawn.WasWithdrawn.Should().BeTrue();
-        repeated.Outcome.Should().Be(ClipboardCaptureOutcome.Duplicate);
-        pipeline.HistorySnapshot.Items.Should().BeEmpty();
+        currentAgain.Outcome.Should().Be(ClipboardCaptureOutcome.Duplicate);
+        pipeline.HistorySnapshot.Items.Should().Equal(current.Item!);
     }
 
     [Fact]
