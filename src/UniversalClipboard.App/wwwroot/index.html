@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Universal Clipboard</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">Windows to iPhone</p>
+      <h1>Universal Clipboard</h1>
+      <p class="warning" role="note">
+        HTTP warning: use this page only on a private Wi-Fi network you trust.
+        Traffic is not encrypted.
+      </p>
+    </header>
+
+    <section class="state-card" data-state="pairing" hidden>
+      <h2>Pairing required</h2>
+      <p id="pairing-message">Generate a new pairing code on Windows and scan its QR code.</p>
+    </section>
+
+    <section class="state-card" data-state="loading">
+      <h2>Loading</h2>
+      <p>Checking for shared clipboard text.</p>
+    </section>
+
+    <section class="state-card" data-state="empty" hidden>
+      <h2>No shared text</h2>
+      <p>Copy approved text on Windows, then keep this page visible.</p>
+    </section>
+
+    <section class="state-card error-card" data-state="error" hidden>
+      <h2>Unable to refresh</h2>
+      <p id="error-message">Check that both devices are on the same private Wi-Fi network.</p>
+    </section>
+
+    <section data-state="items" hidden>
+      <div class="section-heading">
+        <h2>Recent text</h2>
+        <span>Newest first</span>
+      </div>
+      <div id="items-list" class="items-list" aria-live="polite"></div>
+    </section>
+
+    <section class="fallback-card" aria-labelledby="fallback-title">
+      <h2 id="fallback-title">Manual copy</h2>
+      <p>When one-tap copy is unavailable, the exact selected text appears here.</p>
+      <textarea id="copy-fallback" readonly aria-label="Selected clipboard text"></textarea>
+      <p id="copy-status" class="copy-status" role="status"></p>
+    </section>
+  </main>
+</body>
+</html>
