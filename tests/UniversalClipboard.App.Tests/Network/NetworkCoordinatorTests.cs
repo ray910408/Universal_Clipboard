@@ -30,10 +30,9 @@ public sealed class NetworkCoordinatorTests
         ];
         (await fixture.Coordinator.StartAsync()).Status.Should().Be(NetworkSharingStatus.SelectionRequired);
 
-        await fixture.Coordinator.SetSelectedInterfaceAsync("wifi");
         fixture.Ports.Available = false;
         fixture.Ports.OwnerDiagnostic = "pid=42 name=other";
-        var conflict = await fixture.Coordinator.RefreshAsync();
+        var conflict = await fixture.Coordinator.SetSelectedInterfaceAsync("wifi");
         conflict.Status.Should().Be(NetworkSharingStatus.PortConflict);
         conflict.PortDiagnostic.Should().Be("pid=42 name=other");
 
@@ -61,6 +60,24 @@ public sealed class NetworkCoordinatorTests
         state.Port.Should().Be(43127);
         state.PortDiagnostic.Should().Be("pid=123");
         fixture.Host.Starts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Running_same_endpoint_refresh_keeps_running_without_port_probe_or_restart()
+    {
+        var fixture = new Fixture();
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5")];
+        (await fixture.Coordinator.StartAsync()).Status.Should().Be(NetworkSharingStatus.Running);
+        fixture.Ports.Available = false;
+        fixture.Ports.OwnerDiagnostic = "self-listener";
+
+        var state = await fixture.Coordinator.RefreshAsync();
+
+        state.Status.Should().Be(NetworkSharingStatus.Running);
+        state.SelectedAddress.Should().Be(IPAddress.Parse("192.168.1.5"));
+        fixture.Ports.Checks.Should().ContainSingle();
+        fixture.Host.Starts.Should().ContainSingle();
+        fixture.Host.Events.Should().NotContain("stop");
     }
 
     [Fact]
@@ -159,24 +176,28 @@ public sealed class NetworkCoordinatorTests
     }
 
     [Fact]
-    public void Firewall_query_reports_exact_rule_only_for_enabled_tcp_43127_allow_rule()
+    public void Firewall_query_reports_exact_rule_only_for_expected_private_local_subnet_rule()
     {
         var rules = new FakeFirewallRuleQuery
         {
             Rules =
             [
                 new FirewallRuleSnapshot(
-                    "Universal Clipboard",
+                    WindowsFirewallInspector.ExpectedRuleName,
                     IsEnabled: true,
                     FirewallRuleAction.Allow,
                     FirewallRuleProtocol.Tcp,
-                    LocalPort: 43127),
+                    LocalPort: 43127,
+                    FirewallRuleProfile.Private,
+                    FirewallRemoteAddressScope.LocalSubnet),
                 new FirewallRuleSnapshot(
                     "Similar disabled",
                     IsEnabled: false,
                     FirewallRuleAction.Allow,
                     FirewallRuleProtocol.Tcp,
-                    LocalPort: 43127),
+                    LocalPort: 43127,
+                    FirewallRuleProfile.Private,
+                    FirewallRemoteAddressScope.LocalSubnet),
             ],
         };
 
@@ -184,6 +205,112 @@ public sealed class NetworkCoordinatorTests
 
         inspector.Inspect(43127).Status.Should().Be(FirewallRuleStatus.ExactRuleFound);
         inspector.Inspect(43128).Status.Should().Be(FirewallRuleStatus.Unknown);
+    }
+
+    [Theory]
+    [InlineData("unsafe-public", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Public, FirewallRemoteAddressScope.LocalSubnet)]
+    [InlineData("unsafe-any-remote", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.Any)]
+    [InlineData("wrong-name", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
+    [InlineData("disabled", false, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
+    [InlineData("wrong-action", true, FirewallRuleAction.Block, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
+    [InlineData("wrong-protocol", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Udp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
+    [InlineData("wrong-port", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43128, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
+    public void Firewall_query_reports_unknown_for_non_exact_iPhone_rule(
+        string name,
+        bool isEnabled,
+        FirewallRuleAction action,
+        FirewallRuleProtocol protocol,
+        int port,
+        FirewallRuleProfile profile,
+        FirewallRemoteAddressScope remoteScope)
+    {
+        var rules = new FakeFirewallRuleQuery
+        {
+            Rules =
+            [
+                new FirewallRuleSnapshot(
+                    name,
+                    isEnabled,
+                    action,
+                    protocol,
+                    port,
+                    profile,
+                    remoteScope),
+            ],
+        };
+
+        var inspector = new WindowsFirewallInspector(rules);
+
+        inspector.Inspect(43127).Status.Should().Be(FirewallRuleStatus.Unknown);
+    }
+
+    [Fact]
+    public void Network_interface_mapper_uses_injected_profile_strategy_and_requires_gateway_private_ipv4()
+    {
+        var mapper = new WindowsNetworkInterfaceMapper(
+            adapter => adapter.Id == "wifi"
+                ? NetworkProfile.Private
+                : NetworkProfile.Public);
+
+        var mapped = mapper.Map(
+            new NetworkAdapterSnapshot(
+                "wifi",
+                "Wi-Fi",
+                NetworkInterfaceKind.WiFi,
+                NetworkOperationalStatus.Up,
+                [IPAddress.Parse("192.168.1.10")],
+                HasDefaultGateway: true));
+
+        mapped.Profile.Should().Be(NetworkProfile.Private);
+        NetworkInterfaceSelector.Select([mapped], retainedExplicitInterfaceId: null)
+            .Status.Should().Be(NetworkSelectionStatus.AutoSelected);
+    }
+
+    [Fact]
+    public void Tcp_port_probe_reports_listener_diagnostic_when_port_is_occupied()
+    {
+        var probe = new TcpPortProbe(
+            new FakeTcpPortInspector
+            {
+                Listeners =
+                [
+                    new TcpPortOwnerSnapshot(IPAddress.Parse("192.168.1.5"), 43127, "pid unavailable"),
+                ],
+            });
+
+        var result = probe.Check(IPAddress.Parse("192.168.1.5"), 43127);
+
+        result.IsAvailable.Should().BeFalse();
+        result.OwnerDiagnostic.Should().Contain("192.168.1.5:43127");
+        result.OwnerDiagnostic.Should().Contain("pid unavailable");
+    }
+
+    [Fact]
+    public void Com_firewall_rule_query_maps_expected_rule_fields_without_shelling_out()
+    {
+        var query = new WindowsFirewallComRuleQuery(
+            new FakeComFirewallRules(
+                [
+                    new ComFirewallRuleSnapshot(
+                        WindowsFirewallInspector.ExpectedRuleName,
+                        Enabled: true,
+                        Action: 1,
+                        Protocol: 6,
+                        LocalPorts: "43127",
+                        Profiles: WindowsFirewallComRuleQuery.PrivateProfile,
+                        RemoteAddresses: "LocalSubnet"),
+                ]));
+
+        var rule = query.GetRules().Single();
+
+        rule.Should().Be(new FirewallRuleSnapshot(
+            WindowsFirewallInspector.ExpectedRuleName,
+            IsEnabled: true,
+            FirewallRuleAction.Allow,
+            FirewallRuleProtocol.Tcp,
+            LocalPort: 43127,
+            FirewallRuleProfile.Private,
+            FirewallRemoteAddressScope.LocalSubnet));
     }
 
     private static NetworkInterfaceState Iface(
@@ -279,10 +406,15 @@ public sealed class NetworkCoordinatorTests
 
         public string? OwnerDiagnostic { get; set; }
 
-        public PortProbeResult Check(IPAddress address, int port) =>
-            Available
+        public List<IPEndPoint> Checks { get; } = [];
+
+        public PortProbeResult Check(IPAddress address, int port)
+        {
+            Checks.Add(new IPEndPoint(address, port));
+            return Available
                 ? PortProbeResult.Available
                 : PortProbeResult.Conflict(OwnerDiagnostic ?? "unknown");
+        }
     }
 
     private sealed class FakeFirewallInspector : IFirewallInspector
@@ -297,6 +429,19 @@ public sealed class NetworkCoordinatorTests
         public IReadOnlyList<FirewallRuleSnapshot> Rules { get; set; } = [];
 
         public IReadOnlyList<FirewallRuleSnapshot> GetRules() => Rules;
+    }
+
+    private sealed class FakeTcpPortInspector : ITcpPortInspector
+    {
+        public IReadOnlyList<TcpPortOwnerSnapshot> Listeners { get; set; } = [];
+
+        public IReadOnlyList<TcpPortOwnerSnapshot> GetActiveListeners() => Listeners;
+    }
+
+    private sealed class FakeComFirewallRules(
+        IReadOnlyList<ComFirewallRuleSnapshot> rules) : IComFirewallRules
+    {
+        public IReadOnlyList<ComFirewallRuleSnapshot> GetRules() => rules;
     }
 
     private sealed class FakeHostController(ConcurrentQueue<string> events) : ILocalWebHostController

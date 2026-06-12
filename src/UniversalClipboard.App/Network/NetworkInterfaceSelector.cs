@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 
 namespace UniversalClipboard.App.Network;
@@ -34,6 +35,76 @@ public sealed record NetworkInterfaceState(
     NetworkProfile Profile,
     IReadOnlyList<IPAddress> Ipv4Addresses,
     bool HasDefaultGateway);
+
+public sealed record NetworkAdapterSnapshot(
+    string Id,
+    string Name,
+    NetworkInterfaceKind Kind,
+    NetworkOperationalStatus OperationalStatus,
+    IReadOnlyList<IPAddress> Ipv4Addresses,
+    bool HasDefaultGateway);
+
+public sealed class WindowsNetworkInterfaceMapper(Func<NetworkAdapterSnapshot, NetworkProfile> profileResolver)
+{
+    public NetworkInterfaceState Map(NetworkAdapterSnapshot adapter) =>
+        new(
+            adapter.Id,
+            adapter.Name,
+            adapter.Kind,
+            adapter.OperationalStatus,
+            profileResolver(adapter),
+            adapter.Ipv4Addresses,
+            adapter.HasDefaultGateway);
+}
+
+public sealed class WindowsNetworkEnvironment : INetworkEnvironment
+{
+    private readonly WindowsNetworkInterfaceMapper _mapper;
+
+    public WindowsNetworkEnvironment(Func<NetworkAdapterSnapshot, NetworkProfile> profileResolver)
+    {
+        _mapper = new WindowsNetworkInterfaceMapper(profileResolver);
+    }
+
+    public ValueTask<IReadOnlyList<NetworkInterfaceState>> GetInterfacesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var interfaces = NetworkInterface.GetAllNetworkInterfaces()
+            .Select(ToSnapshot)
+            .Select(_mapper.Map)
+            .ToArray();
+        return ValueTask.FromResult<IReadOnlyList<NetworkInterfaceState>>(interfaces);
+    }
+
+    private static NetworkAdapterSnapshot ToSnapshot(NetworkInterface networkInterface)
+    {
+        var properties = networkInterface.GetIPProperties();
+        return new NetworkAdapterSnapshot(
+            networkInterface.Id,
+            networkInterface.Name,
+            ToKind(networkInterface.NetworkInterfaceType),
+            networkInterface.OperationalStatus == OperationalStatus.Up
+                ? NetworkOperationalStatus.Up
+                : NetworkOperationalStatus.Down,
+            properties.UnicastAddresses
+                .Where(address => address.Address.AddressFamily == AddressFamily.InterNetwork)
+                .Select(address => address.Address)
+                .ToArray(),
+            properties.GatewayAddresses.Any(address =>
+                address.Address.AddressFamily == AddressFamily.InterNetwork &&
+                !IPAddress.Any.Equals(address.Address)));
+    }
+
+    private static NetworkInterfaceKind ToKind(NetworkInterfaceType type) =>
+        type switch
+        {
+            NetworkInterfaceType.Ethernet => NetworkInterfaceKind.Ethernet,
+            NetworkInterfaceType.Wireless80211 => NetworkInterfaceKind.WiFi,
+            NetworkInterfaceType.Loopback => NetworkInterfaceKind.Loopback,
+            NetworkInterfaceType.Tunnel => NetworkInterfaceKind.Tunnel,
+            _ => NetworkInterfaceKind.Other,
+        };
+}
 
 public enum NetworkSelectionStatus
 {

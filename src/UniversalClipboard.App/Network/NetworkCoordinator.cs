@@ -1,4 +1,7 @@
+using System.Net.NetworkInformation;
 using System.Net;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using UniversalClipboard.App.Web;
 using UniversalClipboard.Core.Authorization;
 
@@ -15,11 +18,56 @@ public interface IPortProbe
     PortProbeResult Check(IPAddress address, int port);
 }
 
+public sealed record TcpPortOwnerSnapshot(IPAddress Address, int Port, string Diagnostic);
+
+public interface ITcpPortInspector
+{
+    IReadOnlyList<TcpPortOwnerSnapshot> GetActiveListeners();
+}
+
 public sealed record PortProbeResult(bool IsAvailable, string? OwnerDiagnostic)
 {
     public static PortProbeResult Available { get; } = new(true, null);
 
     public static PortProbeResult Conflict(string ownerDiagnostic) => new(false, ownerDiagnostic);
+}
+
+public sealed class TcpPortProbe(ITcpPortInspector inspector) : IPortProbe
+{
+    public PortProbeResult Check(IPAddress address, int port)
+    {
+        var listener = inspector.GetActiveListeners().FirstOrDefault(item =>
+            item.Port == port &&
+            (item.Address.Equals(address) ||
+             item.Address.Equals(IPAddress.Any) ||
+             item.Address.Equals(IPAddress.IPv6Any)));
+
+        return listener is null
+            ? PortProbeResult.Available
+            : PortProbeResult.Conflict(
+                $"{listener.Address}:{listener.Port} {listener.Diagnostic}");
+    }
+}
+
+public sealed class SystemTcpPortInspector : ITcpPortInspector
+{
+    public IReadOnlyList<TcpPortOwnerSnapshot> GetActiveListeners()
+    {
+        var properties = IPGlobalProperties.GetIPGlobalProperties();
+        return properties.GetActiveTcpListeners()
+            .Select(endpoint => new TcpPortOwnerSnapshot(
+                endpoint.Address,
+                endpoint.Port,
+                "owning process unavailable from IPGlobalProperties"))
+            .Concat(properties.GetActiveTcpConnections()
+                .Where(connection => connection.State == TcpState.Listen)
+                .Select(connection => new TcpPortOwnerSnapshot(
+                    connection.LocalEndPoint.Address,
+                    connection.LocalEndPoint.Port,
+                    "owning process unavailable from IPGlobalProperties")))
+            .Distinct()
+            .ToArray();
+    }
 }
 
 public interface IFirewallInspector
@@ -52,26 +100,179 @@ public enum FirewallRuleProtocol
     Any,
 }
 
+public enum FirewallRuleProfile
+{
+    Private,
+    Public,
+    Any,
+}
+
+public enum FirewallRemoteAddressScope
+{
+    LocalSubnet,
+    Any,
+    Other,
+}
+
 public sealed record FirewallRuleSnapshot(
     string Name,
     bool IsEnabled,
     FirewallRuleAction Action,
     FirewallRuleProtocol Protocol,
-    int LocalPort);
+    int LocalPort,
+    FirewallRuleProfile Profile,
+    FirewallRemoteAddressScope RemoteAddressScope);
 
 public sealed record FirewallInspectionResult(FirewallRuleStatus Status);
 
 public sealed class WindowsFirewallInspector(IFirewallRuleQuery ruleQuery) : IFirewallInspector
 {
+    public const string ExpectedRuleName = "Universal Clipboard LAN";
+
     public FirewallInspectionResult Inspect(int port)
     {
         var hasExactRule = ruleQuery.GetRules().Any(rule =>
+            string.Equals(rule.Name, ExpectedRuleName, StringComparison.Ordinal) &&
             rule.IsEnabled &&
             rule.Action == FirewallRuleAction.Allow &&
             rule.Protocol == FirewallRuleProtocol.Tcp &&
-            rule.LocalPort == port);
+            rule.LocalPort == port &&
+            rule.Profile == FirewallRuleProfile.Private &&
+            rule.RemoteAddressScope == FirewallRemoteAddressScope.LocalSubnet);
         return new FirewallInspectionResult(
             hasExactRule ? FirewallRuleStatus.ExactRuleFound : FirewallRuleStatus.Unknown);
+    }
+}
+
+public sealed record ComFirewallRuleSnapshot(
+    string Name,
+    bool Enabled,
+    int Action,
+    int Protocol,
+    string LocalPorts,
+    int Profiles,
+    string RemoteAddresses);
+
+public interface IComFirewallRules
+{
+    IReadOnlyList<ComFirewallRuleSnapshot> GetRules();
+}
+
+public sealed class WindowsFirewallComRuleQuery(IComFirewallRules rules) : IFirewallRuleQuery
+{
+    public const int PrivateProfile = 2;
+    private const int AllowAction = 1;
+    private const int TcpProtocol = 6;
+
+    public IReadOnlyList<FirewallRuleSnapshot> GetRules() =>
+        rules.GetRules()
+            .SelectMany(MapRule)
+            .ToArray();
+
+    private static IEnumerable<FirewallRuleSnapshot> MapRule(ComFirewallRuleSnapshot rule)
+    {
+        foreach (var port in ParsePorts(rule.LocalPorts))
+        {
+            yield return new FirewallRuleSnapshot(
+                rule.Name,
+                rule.Enabled,
+                rule.Action == AllowAction ? FirewallRuleAction.Allow : FirewallRuleAction.Block,
+                rule.Protocol == TcpProtocol ? FirewallRuleProtocol.Tcp : FirewallRuleProtocol.Udp,
+                port,
+                (rule.Profiles & PrivateProfile) == PrivateProfile
+                    ? FirewallRuleProfile.Private
+                    : FirewallRuleProfile.Public,
+                string.Equals(rule.RemoteAddresses, "LocalSubnet", StringComparison.OrdinalIgnoreCase)
+                    ? FirewallRemoteAddressScope.LocalSubnet
+                    : string.Equals(rule.RemoteAddresses, "*", StringComparison.Ordinal)
+                        ? FirewallRemoteAddressScope.Any
+                        : FirewallRemoteAddressScope.Other);
+        }
+    }
+
+    private static IEnumerable<int> ParsePorts(string localPorts)
+    {
+        foreach (var part in localPorts.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (int.TryParse(part, out var port))
+            {
+                yield return port;
+            }
+        }
+    }
+}
+
+public sealed class WindowsFirewallComRules : IComFirewallRules
+{
+    public IReadOnlyList<ComFirewallRuleSnapshot> GetRules()
+    {
+        var policyType = Type.GetTypeFromProgID("HNetCfg.FwPolicy2");
+        if (policyType is null)
+        {
+            return [];
+        }
+
+        object? policy = null;
+        try
+        {
+            policy = Activator.CreateInstance(policyType);
+            if (policy is null)
+            {
+                return [];
+            }
+
+            var rules = policyType.InvokeMember(
+                "Rules",
+                System.Reflection.BindingFlags.GetProperty,
+                null,
+                policy,
+                null);
+            if (rules is not System.Collections.IEnumerable enumerable)
+            {
+                return [];
+            }
+
+            var snapshots = new List<ComFirewallRuleSnapshot>();
+            foreach (var rule in enumerable)
+            {
+                snapshots.Add(new ComFirewallRuleSnapshot(
+                    GetProperty<string>(rule, "Name") ?? "",
+                    GetProperty<bool>(rule, "Enabled"),
+                    GetProperty<int>(rule, "Action"),
+                    GetProperty<int>(rule, "Protocol"),
+                    GetProperty<string>(rule, "LocalPorts") ?? "",
+                    GetProperty<int>(rule, "Profiles"),
+                    GetProperty<string>(rule, "RemoteAddresses") ?? ""));
+            }
+
+            return snapshots;
+        }
+        catch (COMException)
+        {
+            return [];
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return [];
+        }
+        finally
+        {
+            if (policy is not null && Marshal.IsComObject(policy))
+            {
+                Marshal.ReleaseComObject(policy);
+            }
+        }
+    }
+
+    private static T? GetProperty<T>(object target, string name)
+    {
+        var value = target.GetType().InvokeMember(
+            name,
+            System.Reflection.BindingFlags.GetProperty,
+            null,
+            target,
+            null);
+        return value is T typed ? typed : default;
     }
 }
 
@@ -276,6 +477,11 @@ public sealed class NetworkCoordinator
         var selected = selection.Selected!;
         var address = selection.SelectedAddress!;
         var endpoint = new IPEndPoint(address, LocalWebHost.Port);
+        if (_runningEndpoint is not null && _runningEndpoint.Equals(endpoint))
+        {
+            return Publish(RunningState(selected, address));
+        }
+
         var probe = _portProbe.Check(address, LocalWebHost.Port);
         if (!probe.IsAvailable)
         {
@@ -290,11 +496,6 @@ public sealed class NetworkCoordinator
                 IsPortListening: false,
                 _firewall.Inspect(LocalWebHost.Port).Status,
                 probe.OwnerDiagnostic));
-        }
-
-        if (_runningEndpoint is not null && _runningEndpoint.Equals(endpoint))
-        {
-            return Publish(RunningState(selected, address));
         }
 
         var hadRunningEndpoint = _runningEndpoint is not null;
