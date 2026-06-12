@@ -313,6 +313,65 @@ public sealed class NetworkCoordinatorTests
             FirewallRemoteAddressScope.LocalSubnet));
     }
 
+    [Theory]
+    [InlineData(WindowsFirewallComRuleQuery.PrivateProfile | WindowsFirewallComRuleQuery.PublicProfile)]
+    [InlineData(WindowsFirewallComRuleQuery.AllProfiles)]
+    public void Com_firewall_rule_query_does_not_treat_mixed_profile_masks_as_private(
+        int profileMask)
+    {
+        var inspector = new WindowsFirewallInspector(
+            new WindowsFirewallComRuleQuery(
+                new FakeComFirewallRules(
+                    [
+                        new ComFirewallRuleSnapshot(
+                            WindowsFirewallInspector.ExpectedRuleName,
+                            Enabled: true,
+                            Action: 1,
+                            Protocol: 6,
+                            LocalPorts: "43127",
+                            Profiles: profileMask,
+                            RemoteAddresses: "LocalSubnet"),
+                    ])));
+
+        inspector.Inspect(43127).Status.Should().Be(FirewallRuleStatus.Unknown);
+    }
+
+    [Fact]
+    public void Windows_network_environment_has_default_production_profile_resolver()
+    {
+        typeof(WindowsNetworkEnvironment)
+            .GetConstructor(Type.EmptyTypes)
+            .Should()
+            .NotBeNull();
+
+        var environment = new WindowsNetworkEnvironment();
+
+        environment.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Windows_network_profile_resolver_returns_unknown_when_adapter_mapping_is_missing()
+    {
+        var resolver = new WindowsNetworkProfileResolver(
+            new FakeComNetworkList(
+                [
+                    new ComNetworkConnectionSnapshot(
+                        AdapterId: "other-adapter",
+                        Category: WindowsNetworkProfileResolver.PrivateCategory),
+                ]));
+
+        var profile = resolver.Resolve(
+            new NetworkAdapterSnapshot(
+                "wifi-adapter",
+                "Wi-Fi",
+                NetworkInterfaceKind.WiFi,
+                NetworkOperationalStatus.Up,
+                [IPAddress.Parse("192.168.1.10")],
+                HasDefaultGateway: true));
+
+        profile.Should().Be(NetworkProfile.Unknown);
+    }
+
     private static NetworkInterfaceState Iface(
         string id,
         string address,
@@ -442,6 +501,12 @@ public sealed class NetworkCoordinatorTests
         IReadOnlyList<ComFirewallRuleSnapshot> rules) : IComFirewallRules
     {
         public IReadOnlyList<ComFirewallRuleSnapshot> GetRules() => rules;
+    }
+
+    private sealed class FakeComNetworkList(
+        IReadOnlyList<ComNetworkConnectionSnapshot> connections) : IComNetworkList
+    {
+        public IReadOnlyList<ComNetworkConnectionSnapshot> GetConnections() => connections;
     }
 
     private sealed class FakeHostController(ConcurrentQueue<string> events) : ILocalWebHostController

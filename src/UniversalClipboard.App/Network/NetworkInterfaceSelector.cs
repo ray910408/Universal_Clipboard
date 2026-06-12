@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 
 namespace UniversalClipboard.App.Network;
 
@@ -57,9 +58,158 @@ public sealed class WindowsNetworkInterfaceMapper(Func<NetworkAdapterSnapshot, N
             adapter.HasDefaultGateway);
 }
 
+public sealed record ComNetworkConnectionSnapshot(string AdapterId, int Category);
+
+public interface IComNetworkList
+{
+    IReadOnlyList<ComNetworkConnectionSnapshot> GetConnections();
+}
+
+public sealed class WindowsNetworkProfileResolver(IComNetworkList networkList)
+{
+    public const int PublicCategory = 0;
+    public const int PrivateCategory = 1;
+    public const int DomainAuthenticatedCategory = 2;
+
+    public WindowsNetworkProfileResolver()
+        : this(new WindowsNetworkListManager())
+    {
+    }
+
+    public NetworkProfile Resolve(NetworkAdapterSnapshot adapter)
+    {
+        var adapterId = NormalizeAdapterId(adapter.Id);
+        ComNetworkConnectionSnapshot? connection;
+        try
+        {
+            connection = networkList.GetConnections().FirstOrDefault(item =>
+                string.Equals(
+                    NormalizeAdapterId(item.AdapterId),
+                    adapterId,
+                    StringComparison.OrdinalIgnoreCase));
+        }
+        catch (COMException)
+        {
+            return NetworkProfile.Unknown;
+        }
+        catch (ArgumentException)
+        {
+            return NetworkProfile.Unknown;
+        }
+
+        return connection?.Category switch
+        {
+            PrivateCategory => NetworkProfile.Private,
+            PublicCategory => NetworkProfile.Public,
+            _ => NetworkProfile.Unknown,
+        };
+    }
+
+    private static string NormalizeAdapterId(string adapterId) =>
+        adapterId.Trim().Trim('{', '}');
+}
+
+public sealed class WindowsNetworkListManager : IComNetworkList
+{
+    private static readonly Guid NetworkListManagerClsid =
+        Guid.Parse("DCB00C01-570F-4A9B-8D69-199FDBA5723B");
+
+    public IReadOnlyList<ComNetworkConnectionSnapshot> GetConnections()
+    {
+        var managerType = Type.GetTypeFromCLSID(NetworkListManagerClsid);
+        if (managerType is null)
+        {
+            return [];
+        }
+
+        object? manager = null;
+        try
+        {
+            manager = Activator.CreateInstance(managerType);
+            if (manager is null)
+            {
+                return [];
+            }
+
+            var connections = Invoke(manager, "GetNetworkConnections");
+            if (connections is not System.Collections.IEnumerable enumerable)
+            {
+                return [];
+            }
+
+            var snapshots = new List<ComNetworkConnectionSnapshot>();
+            foreach (var connection in enumerable)
+            {
+                object? network = null;
+                try
+                {
+                    var adapterId = Invoke(connection, "GetAdapterId")?.ToString();
+                    network = Invoke(connection, "GetNetwork");
+                    if (network is null)
+                    {
+                        continue;
+                    }
+
+                    var category = Invoke(network, "GetCategory");
+                    if (adapterId is not null && category is int typedCategory)
+                    {
+                        snapshots.Add(new ComNetworkConnectionSnapshot(adapterId, typedCategory));
+                    }
+                }
+                finally
+                {
+                    if (network is not null && Marshal.IsComObject(network))
+                    {
+                        Marshal.ReleaseComObject(network);
+                    }
+
+                    if (Marshal.IsComObject(connection))
+                    {
+                        Marshal.ReleaseComObject(connection);
+                    }
+                }
+            }
+
+            return snapshots;
+        }
+        catch (COMException)
+        {
+            return [];
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return [];
+        }
+        catch (ArgumentException)
+        {
+            return [];
+        }
+        finally
+        {
+            if (manager is not null && Marshal.IsComObject(manager))
+            {
+                Marshal.ReleaseComObject(manager);
+            }
+        }
+    }
+
+    private static object? Invoke(object target, string method) =>
+        target.GetType().InvokeMember(
+            method,
+            System.Reflection.BindingFlags.InvokeMethod,
+            null,
+            target,
+            null);
+}
+
 public sealed class WindowsNetworkEnvironment : INetworkEnvironment
 {
     private readonly WindowsNetworkInterfaceMapper _mapper;
+
+    public WindowsNetworkEnvironment()
+        : this(new WindowsNetworkProfileResolver().Resolve)
+    {
+    }
 
     public WindowsNetworkEnvironment(Func<NetworkAdapterSnapshot, NetworkProfile> profileResolver)
     {
@@ -69,11 +219,40 @@ public sealed class WindowsNetworkEnvironment : INetworkEnvironment
     public ValueTask<IReadOnlyList<NetworkInterfaceState>> GetInterfacesAsync(
         CancellationToken cancellationToken = default)
     {
-        var interfaces = NetworkInterface.GetAllNetworkInterfaces()
-            .Select(ToSnapshot)
-            .Select(_mapper.Map)
-            .ToArray();
-        return ValueTask.FromResult<IReadOnlyList<NetworkInterfaceState>>(interfaces);
+        try
+        {
+            var interfaces = NetworkInterface.GetAllNetworkInterfaces()
+                .Select(TryToSnapshot)
+                .Where(snapshot => snapshot is not null)
+                .Cast<NetworkAdapterSnapshot>()
+                .Select(_mapper.Map)
+                .ToArray();
+            return ValueTask.FromResult<IReadOnlyList<NetworkInterfaceState>>(interfaces);
+        }
+        catch (NetworkInformationException)
+        {
+            return ValueTask.FromResult<IReadOnlyList<NetworkInterfaceState>>([]);
+        }
+        catch (ArgumentException)
+        {
+            return ValueTask.FromResult<IReadOnlyList<NetworkInterfaceState>>([]);
+        }
+    }
+
+    private static NetworkAdapterSnapshot? TryToSnapshot(NetworkInterface networkInterface)
+    {
+        try
+        {
+            return ToSnapshot(networkInterface);
+        }
+        catch (NetworkInformationException)
+        {
+            return null;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
     }
 
     private static NetworkAdapterSnapshot ToSnapshot(NetworkInterface networkInterface)

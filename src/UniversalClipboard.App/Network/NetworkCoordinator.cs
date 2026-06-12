@@ -160,7 +160,10 @@ public interface IComFirewallRules
 
 public sealed class WindowsFirewallComRuleQuery(IComFirewallRules rules) : IFirewallRuleQuery
 {
+    public const int DomainProfile = 1;
     public const int PrivateProfile = 2;
+    public const int PublicProfile = 4;
+    public const int AllProfiles = int.MaxValue;
     private const int AllowAction = 1;
     private const int TcpProtocol = 6;
 
@@ -179,9 +182,11 @@ public sealed class WindowsFirewallComRuleQuery(IComFirewallRules rules) : IFire
                 rule.Action == AllowAction ? FirewallRuleAction.Allow : FirewallRuleAction.Block,
                 rule.Protocol == TcpProtocol ? FirewallRuleProtocol.Tcp : FirewallRuleProtocol.Udp,
                 port,
-                (rule.Profiles & PrivateProfile) == PrivateProfile
+                rule.Profiles == PrivateProfile
                     ? FirewallRuleProfile.Private
-                    : FirewallRuleProfile.Public,
+                    : rule.Profiles == PublicProfile
+                        ? FirewallRuleProfile.Public
+                        : FirewallRuleProfile.Any,
                 string.Equals(rule.RemoteAddresses, "LocalSubnet", StringComparison.OrdinalIgnoreCase)
                     ? FirewallRemoteAddressScope.LocalSubnet
                     : string.Equals(rule.RemoteAddresses, "*", StringComparison.Ordinal)
