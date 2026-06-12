@@ -61,6 +61,7 @@ public enum AuthorizationFailure
     Revoking,
     PersistenceFailed,
     Canceled,
+    QueueFull,
     Disposed,
 }
 
@@ -68,7 +69,12 @@ public sealed record ExchangeAuthorizationRequest(
     string PairingCode,
     string Label,
     IPAddress BoundHostIpv4,
-    AuthorizationDuration Duration);
+    AuthorizationDuration Duration)
+{
+    public override string ToString() =>
+        $"{nameof(ExchangeAuthorizationRequest)} {{ PairingCode = [REDACTED], " +
+        $"Label = {Label}, BoundHostIpv4 = {BoundHostIpv4}, Duration = {Duration} }}";
+}
 
 public sealed class ExchangeAuthorizationResult
 {
@@ -183,8 +189,6 @@ public sealed class SessionToken
 
     public string Value { get; }
 
-    public ReadOnlyMemory<byte> Bytes => _bytes;
-
     public static SessionToken FromBytes(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length != SessionTokenService.TokenByteCount)
@@ -219,6 +223,16 @@ public sealed class SessionToken
 
         token = FromBytes(bytes);
         return true;
+    }
+
+    internal void CopyBytesTo(Span<byte> destination)
+    {
+        if (destination.Length < _bytes.Length)
+        {
+            throw new ArgumentException("Destination is too short.", nameof(destination));
+        }
+
+        _bytes.CopyTo(destination);
     }
 
     public override string ToString() => "[REDACTED]";

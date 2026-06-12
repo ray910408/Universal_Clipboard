@@ -35,7 +35,8 @@ public sealed class SessionTokenServiceTests
         issue.Authorization.CreatedAtUtc.Should().Be(now);
         issue.Authorization.BoundHostIpv4.Should().Be(IPAddress.Parse("192.168.1.20"));
         issue.Authorization.ExpiresAtUtc.Should().Be(expectedLifetime is null ? null : now + expectedLifetime);
-        issue.Authorization.TokenDigest.Should().Equal(SHA256.HashData(issue.Token.Bytes.Span));
+        issue.Authorization.TokenDigest.Should().Equal(
+            SHA256.HashData(Enumerable.Range(16, 32).Select(value => (byte)value).ToArray()));
         issue.Authorization.TokenDigest.Should().HaveCount(32);
         entropy.RequestedLengths.Should().Equal(16, 32);
     }
@@ -76,7 +77,7 @@ public sealed class SessionTokenServiceTests
         parsed.Should().BeTrue();
         token.Value.Should().HaveLength(43);
         token.Value.Should().NotContainAny("=", "+", "/");
-        roundTripped!.Bytes.ToArray().Should().Equal(bytes);
+        roundTripped!.Value.Should().Be(token.Value);
     }
 
     [Theory]
@@ -99,5 +100,18 @@ public sealed class SessionTokenServiceTests
         var act = () => service.Issue("Browser", IPAddress.IPv6Loopback, AuthorizationDuration.OneHour);
 
         act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Session_token_public_surface_does_not_expose_raw_bytes()
+    {
+        typeof(SessionToken).GetProperty("Bytes").Should().BeNull();
+        typeof(SessionToken).GetMethods()
+            .Where(method => method.IsPublic && !method.IsSpecialName)
+            .Select(method => method.ReturnType)
+            .Should().NotContain(returnType =>
+                returnType == typeof(byte[]) ||
+                returnType == typeof(Memory<byte>) ||
+                returnType == typeof(ReadOnlyMemory<byte>));
     }
 }

@@ -10,6 +10,8 @@ public sealed class AuthorizationCoordinator :
     IAuthorizationAdministration,
     IAsyncDisposable
 {
+    public const int MutationQueueCapacity = 256;
+
     private readonly IAuthorizationPersistence _persistence;
     private readonly PairingCodeManager _pairingCodes;
     private readonly SessionTokenService _tokenService;
@@ -17,6 +19,7 @@ public sealed class AuthorizationCoordinator :
     private readonly object _leaseGate = new();
     private readonly Dictionary<Guid, LeaseTracker> _leaseTrackers = [];
     private readonly HashSet<Guid> _revoking = [];
+    private readonly HashSet<Guid> _expiredCleanupPending = [];
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Channel<ICommand> _commands;
     private readonly Task _worker;
@@ -37,12 +40,13 @@ public sealed class AuthorizationCoordinator :
         _timeProvider = timeProvider;
         _document = document;
         _snapshot = new AuthorizationStateSnapshot(document.Authorizations);
-        _commands = Channel.CreateUnbounded<ICommand>(
-            new UnboundedChannelOptions
+        _commands = Channel.CreateBounded<ICommand>(
+            new BoundedChannelOptions(MutationQueueCapacity)
             {
                 SingleReader = true,
                 SingleWriter = false,
                 AllowSynchronousContinuations = false,
+                FullMode = BoundedChannelFullMode.Wait,
             });
         _worker = Task.Run(ProcessCommandsAsync);
     }
@@ -128,7 +132,11 @@ public sealed class AuthorizationCoordinator :
             if (authorization.ExpiresAtUtc is { } expiry &&
                 _timeProvider.GetUtcNow() >= expiry)
             {
-                expiredAuthorizationId = authorization.Id;
+                if (_expiredCleanupPending.Add(authorization.Id))
+                {
+                    expiredAuthorizationId = authorization.Id;
+                }
+
                 result = new AcquireLeaseResult(AuthorizationFailure.Expired, null);
             }
             else if (_revoking.Contains(authorization.Id))
@@ -258,29 +266,33 @@ public sealed class AuthorizationCoordinator :
         var drains = BeginRevocation(ids);
         try
         {
-            await Task.WhenAll(drains).WaitAsync(_shutdown.Token);
+            try
+            {
+                await Task.WhenAll(drains).WaitAsync(_shutdown.Token);
+            }
+            catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+            {
+                return MutationFailed(AuthorizationFailure.Disposed);
+            }
+
+            var idSet = ids.ToHashSet();
+            var candidate = new AuthorizationDocument(
+                _document.Authorizations
+                    .Where(authorization => !idSet.Contains(authorization.Id))
+                    .ToImmutableArray());
+
+            if (!await TrySaveAsync(candidate))
+            {
+                return MutationFailed(AuthorizationFailure.PersistenceFailed);
+            }
+
+            Publish(candidate);
+            return MutationSucceeded();
         }
-        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+        finally
         {
             EndRevocation(ids);
-            return MutationFailed(AuthorizationFailure.Disposed);
         }
-
-        var idSet = ids.ToHashSet();
-        var candidate = new AuthorizationDocument(
-            _document.Authorizations
-                .Where(authorization => !idSet.Contains(authorization.Id))
-                .ToImmutableArray());
-
-        if (!await TrySaveAsync(candidate))
-        {
-            EndRevocation(ids);
-            return MutationFailed(AuthorizationFailure.PersistenceFailed);
-        }
-
-        Publish(candidate);
-        EndRevocation(ids);
-        return MutationSucceeded();
     }
 
     private async Task<AuthorizationMutationResult> RemoveStaleBindingsCoreAsync(
@@ -338,7 +350,10 @@ public sealed class AuthorizationCoordinator :
 
         foreach (var tracker in trackers)
         {
-            tracker.RevocationSource.Cancel();
+            ThreadPool.UnsafeQueueUserWorkItem(
+                static state => state.CancelCallbacks(),
+                tracker,
+                preferLocal: false);
         }
 
         return trackers.Select(tracker => tracker.Drained.Task).ToImmutableArray();
@@ -380,9 +395,27 @@ public sealed class AuthorizationCoordinator :
 
     private void ScheduleExpiredCleanup(Guid authorizationId)
     {
-        _ = EnqueueMutationAsync(
+        var cleanup = EnqueueMutationAsync(
             () => CleanupExpiredCoreAsync(authorizationId),
             CancellationToken.None);
+        _ = ObserveExpiredCleanupAsync(authorizationId, cleanup);
+    }
+
+    private async Task ObserveExpiredCleanupAsync(
+        Guid authorizationId,
+        ValueTask<AuthorizationMutationResult> cleanup)
+    {
+        try
+        {
+            await cleanup;
+        }
+        finally
+        {
+            lock (_leaseGate)
+            {
+                _expiredCleanupPending.Remove(authorizationId);
+            }
+        }
     }
 
     private ValueTask<AuthorizationMutationResult> EnqueueMutationAsync(
@@ -406,7 +439,7 @@ public sealed class AuthorizationCoordinator :
         var command = new Command<T>(operation, failureFactory, cancellationToken);
         if (!_commands.Writer.TryWrite(command))
         {
-            return ValueTask.FromResult(failureFactory(AuthorizationFailure.Disposed));
+            command.Cancel(AuthorizationFailure.QueueFull);
         }
 
         return new ValueTask<T>(command.Completion);
@@ -422,7 +455,7 @@ public sealed class AuthorizationCoordinator :
                 continue;
             }
 
-            if (command.IsCancellationRequested)
+            if (!command.TryStart())
             {
                 command.Cancel(AuthorizationFailure.Canceled);
                 continue;
@@ -455,39 +488,93 @@ public sealed class AuthorizationCoordinator :
 
     private interface ICommand
     {
-        bool IsCancellationRequested { get; }
-
         Task ExecuteAsync();
+
+        bool TryStart();
 
         void Cancel(AuthorizationFailure failure);
     }
 
-    private sealed class Command<T>(
-        Func<Task<T>> operation,
-        Func<AuthorizationFailure, T> failureFactory,
-        CancellationToken cancellationToken) : ICommand
+    private sealed class Command<T> : ICommand
     {
         private readonly TaskCompletionSource<T> _completion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Func<Task<T>>? _operation;
+        private Func<AuthorizationFailure, T>? _failureFactory;
+        private CancellationTokenRegistration _cancellationRegistration;
+        private int _state;
+
+        public Command(
+            Func<Task<T>> operation,
+            Func<AuthorizationFailure, T> failureFactory,
+            CancellationToken cancellationToken)
+        {
+            _operation = operation;
+            _failureFactory = failureFactory;
+            _cancellationRegistration = cancellationToken.UnsafeRegister(
+                static state => ((Command<T>)state!).CancelFromCaller(),
+                this);
+
+            if (Volatile.Read(ref _state) == 2)
+            {
+                _cancellationRegistration.Dispose();
+            }
+        }
 
         public Task<T> Completion => _completion.Task;
 
-        public bool IsCancellationRequested => cancellationToken.IsCancellationRequested;
+        public bool TryStart() =>
+            Interlocked.CompareExchange(ref _state, 1, 0) == 0;
 
         public async Task ExecuteAsync()
         {
+            var operation = Interlocked.Exchange(ref _operation, null);
             try
             {
-                _completion.TrySetResult(await operation());
+                _completion.TrySetResult(await operation!());
             }
             catch (Exception exception)
             {
                 _completion.TrySetException(exception);
             }
+            finally
+            {
+                Interlocked.Exchange(ref _failureFactory, null);
+                Volatile.Write(ref _state, 2);
+                _cancellationRegistration.Dispose();
+            }
         }
 
-        public void Cancel(AuthorizationFailure failure) =>
-            _completion.TrySetResult(failureFactory(failure));
+        public void Cancel(AuthorizationFailure failure)
+        {
+            if (Interlocked.CompareExchange(ref _state, 2, 0) != 0)
+            {
+                if (Volatile.Read(ref _state) == 2)
+                {
+                    _cancellationRegistration.Dispose();
+                }
+
+                return;
+            }
+
+            CompleteFailure(failure);
+            _cancellationRegistration.Dispose();
+        }
+
+        private void CancelFromCaller()
+        {
+            if (Interlocked.CompareExchange(ref _state, 2, 0) == 0)
+            {
+                CompleteFailure(AuthorizationFailure.Canceled);
+            }
+        }
+
+        private void CompleteFailure(AuthorizationFailure failure)
+        {
+            Interlocked.Exchange(ref _operation, null);
+            var failureFactory = Interlocked.Exchange(ref _failureFactory, null);
+            _completion.TrySetResult(failureFactory!(failure));
+        }
     }
 
     private sealed class LeaseTracker
@@ -498,5 +585,17 @@ public sealed class AuthorizationCoordinator :
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int Count { get; set; }
+
+        public void CancelCallbacks()
+        {
+            try
+            {
+                RevocationSource.Cancel(throwOnFirstException: false);
+            }
+            catch (AggregateException)
+            {
+                // Lease callbacks are external code; revocation must continue.
+            }
+        }
     }
 }

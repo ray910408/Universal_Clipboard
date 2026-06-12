@@ -125,6 +125,61 @@ public sealed class AuthorizationCoordinatorMutationTests
         lease.Dispose();
     }
 
+    [Fact]
+    public async Task Queued_command_cancellation_completes_before_blocking_head_drains()
+    {
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var record = AuthorizationRecordFactory.Create();
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+        await using var coordinator = await CreateCoordinatorAsync(persistence);
+        var lease = coordinator.AcquireLease(
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease!;
+        var revokeTask = coordinator.RevokeAsync(record.Id).AsTask();
+        await WaitUntilAsync(() => lease.RevocationToken.IsCancellationRequested);
+        using var cancellation = new CancellationTokenSource();
+        var queuedTask = coordinator.RemoveStaleBindingsAsync(
+            [IPAddress.Loopback],
+            cancellation.Token).AsTask();
+
+        cancellation.Cancel();
+        var completedBeforeDrain =
+            await Task.WhenAny(queuedTask, Task.Delay(250)) == queuedTask;
+
+        lease.Dispose();
+        await revokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var queued = await queuedTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        completedBeforeDrain.Should().BeTrue();
+        queued.Failure.Should().Be(AuthorizationFailure.Canceled);
+    }
+
+    [Fact]
+    public async Task Mutation_queue_is_bounded_and_rejects_excess_work_immediately()
+    {
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var record = AuthorizationRecordFactory.Create();
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+        await using var coordinator = await CreateCoordinatorAsync(persistence);
+        var lease = coordinator.AcquireLease(
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease!;
+        var revokeTask = coordinator.RevokeAsync(record.Id).AsTask();
+        await WaitUntilAsync(() => lease.RevocationToken.IsCancellationRequested);
+
+        var queued = Enumerable.Range(0, AuthorizationCoordinator.MutationQueueCapacity + 32)
+            .Select(_ => coordinator.RemoveStaleBindingsAsync([IPAddress.Loopback]).AsTask())
+            .ToArray();
+        await Task.Delay(50);
+
+        queued.Count(task =>
+                task.IsCompletedSuccessfully &&
+                task.Result.Failure == AuthorizationFailure.QueueFull)
+            .Should().BeGreaterThan(0);
+
+        lease.Dispose();
+        await revokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.WhenAll(queued).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     private static ValueTask<AuthorizationCoordinator> CreateCoordinatorAsync(
         FakeAuthorizationPersistence persistence)
     {

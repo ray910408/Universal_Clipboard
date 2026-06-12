@@ -165,6 +165,20 @@ public sealed class AuthorizationCoordinatorExchangeTests
         persistence.SaveAttempts.Should().ContainSingle();
     }
 
+    [Fact]
+    public void Exchange_request_ToString_redacts_pairing_code()
+    {
+        const string pairingCode = "sensitive-pairing-code";
+        var request = new ExchangeAuthorizationRequest(
+            pairingCode,
+            "Browser",
+            IPAddress.Loopback,
+            AuthorizationDuration.OneHour);
+
+        request.ToString().Should().NotContain(pairingCode);
+        request.ToString().Should().Contain("[REDACTED]");
+    }
+
     private static PairingCodeManager CreatePairingCodes() =>
         new(
             new ManualTimeProvider(AuthorizationRecordFactory.Now),

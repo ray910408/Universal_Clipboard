@@ -58,8 +58,10 @@ public sealed class SessionTokenService
         ArgumentNullException.ThrowIfNull(authorization);
         ArgumentNullException.ThrowIfNull(token);
 
+        Span<byte> tokenBytes = stackalloc byte[TokenByteCount];
+        token.CopyBytesTo(tokenBytes);
         Span<byte> digest = stackalloc byte[SHA256.HashSizeInBytes];
-        SHA256.HashData(token.Bytes.Span, digest);
+        SHA256.HashData(tokenBytes, digest);
 
         return authorization.TokenDigest.Length == digest.Length &&
             CryptographicOperations.FixedTimeEquals(authorization.TokenDigest.AsSpan(), digest);
