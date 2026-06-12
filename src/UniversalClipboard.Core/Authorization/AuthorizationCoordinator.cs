@@ -439,7 +439,12 @@ public sealed class AuthorizationCoordinator :
         var command = new Command<T>(operation, failureFactory, cancellationToken);
         if (!_commands.Writer.TryWrite(command))
         {
-            command.Cancel(AuthorizationFailure.QueueFull);
+            var failure =
+                Volatile.Read(ref _disposeStarted) != 0 ||
+                _commands.Reader.Completion.IsCompleted
+                    ? AuthorizationFailure.Disposed
+                    : AuthorizationFailure.QueueFull;
+            command.Cancel(failure);
         }
 
         return new ValueTask<T>(command.Completion);

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using FluentAssertions;
 using UniversalClipboard.Core.Authorization;
 
@@ -178,6 +179,72 @@ public sealed class AuthorizationCoordinatorMutationTests
         lease.Dispose();
         await revokeTask.WaitAsync(TimeSpan.FromSeconds(5));
         await Task.WhenAll(queued).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task Enqueue_racing_dispose_never_reports_queue_full_or_hangs()
+    {
+        const int iterations = 200;
+        const int enqueuesPerIteration = 32;
+
+        for (var iteration = 0; iteration < iterations; iteration++)
+        {
+            var coordinator = await CreateCoordinatorAsync(new FakeAuthorizationPersistence());
+            using var start = new ManualResetEventSlim();
+            var enqueues = Enumerable.Range(0, enqueuesPerIteration)
+                .Select(_ => Task.Run(async () =>
+                {
+                    start.Wait();
+                    return await coordinator.RemoveStaleBindingsAsync([IPAddress.Loopback]);
+                }))
+                .ToArray();
+            var dispose = Task.Run(async () =>
+            {
+                start.Wait();
+                await coordinator.DisposeAsync();
+            });
+
+            start.Set();
+            var results = await Task.WhenAll(enqueues).WaitAsync(TimeSpan.FromSeconds(5));
+            await dispose.WaitAsync(TimeSpan.FromSeconds(5));
+
+            results.Should().OnlyContain(
+                result =>
+                    result.Failure == AuthorizationFailure.None ||
+                    result.Failure == AuthorizationFailure.Disposed,
+                $"iteration {iteration} has fewer enqueues than queue capacity");
+        }
+    }
+
+    [Fact]
+    public async Task Rejected_command_clears_operation_reference()
+    {
+        var commandType = typeof(AuthorizationCoordinator)
+            .GetNestedType("Command`1", BindingFlags.NonPublic)!
+            .MakeGenericType(typeof(AuthorizationFailure));
+        var payload = new object();
+        Func<Task<AuthorizationFailure>> operation = () =>
+        {
+            GC.KeepAlive(payload);
+            throw new InvalidOperationException("must not execute");
+        };
+        Func<AuthorizationFailure, AuthorizationFailure> failureFactory = failure => failure;
+        var command = Activator.CreateInstance(
+            commandType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [operation, failureFactory, CancellationToken.None],
+            culture: null)!;
+
+        commandType.GetMethod("Cancel")!.Invoke(
+            command,
+            [AuthorizationFailure.Disposed]);
+
+        commandType.GetField("_operation", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(command).Should().BeNull();
+        var completion = (Task<AuthorizationFailure>)commandType.GetProperty("Completion")!
+            .GetValue(command)!;
+        (await completion).Should().Be(AuthorizationFailure.Disposed);
     }
 
     private static ValueTask<AuthorizationCoordinator> CreateCoordinatorAsync(
