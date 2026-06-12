@@ -140,7 +140,17 @@ public sealed class WindowsClipboardMonitor : NativeWindow, IDisposable
 
     private void ReadAttempt(int busyCount)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         var result = _reader.ReadUnicodeText();
+        if (_disposed)
+        {
+            return;
+        }
+
         switch (result.Status)
         {
             case ClipboardReadStatus.Text:
@@ -152,7 +162,13 @@ public sealed class WindowsClipboardMonitor : NativeWindow, IDisposable
                     var nextBusyCount = busyCount + 1;
                     _scheduler.PostDelayed(
                         BusyRetryDelays[busyCount],
-                        () => ReadAttempt(nextBusyCount));
+                        () =>
+                        {
+                            if (!_disposed)
+                            {
+                                ReadAttempt(nextBusyCount);
+                            }
+                        });
                 }
                 else
                 {

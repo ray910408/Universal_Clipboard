@@ -87,6 +87,32 @@ public sealed class WindowsClipboardMonitorTests
     }
 
     [Fact]
+    public async Task Dispose_cancels_pending_busy_retry_callbacks()
+    {
+        await StaThreadFixture.RunAsync(() =>
+        {
+            var reader = new FakeClipboardReader();
+            reader.Results.Enqueue(ClipboardReadResult.Busy());
+            reader.Results.Enqueue(ClipboardReadResult.Text("late"));
+            var sink = new FakeClipboardSink();
+            var scheduler = new InlineStaScheduler { AutoRunDelayed = false };
+            var monitor = new WindowsClipboardMonitor(
+                reader,
+                sink,
+                new FakeNativeClipboardListener(),
+                scheduler);
+
+            monitor.HandleClipboardUpdate();
+            monitor.Dispose();
+            scheduler.RunDelayed();
+
+            reader.ReadThreadIds.Should().HaveCount(1);
+            sink.Texts.Should().BeEmpty();
+            sink.Diagnostics.Should().BeEmpty();
+        });
+    }
+
+    [Fact]
     public async Task Dispose_unregisters_listener()
     {
         await StaThreadFixture.RunAsync(() =>

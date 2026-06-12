@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using FluentAssertions;
 using UniversalClipboard.App.Network;
 using UniversalClipboard.Core.Authorization;
@@ -158,6 +159,40 @@ public sealed class NetworkCoordinatorTests
 
         fixture.Environment.MaxConcurrentSnapshots.Should().Be(1);
         fixture.Host.Starts.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Shutdown_during_host_start_keeps_final_state_shutdown_and_stops_late_start()
+    {
+        var fixture = new Fixture();
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5")];
+        fixture.Host.BlockStart = true;
+
+        var start = fixture.Coordinator.StartAsync();
+        await fixture.Host.StartEntered.WaitAsync(TimeSpan.FromSeconds(5));
+        var shutdown = await fixture.Coordinator.ShutdownAsync();
+        fixture.Host.ReleaseStart();
+        var startResult = await start;
+
+        shutdown.Status.Should().Be(NetworkSharingStatus.Shutdown);
+        startResult.Status.Should().Be(NetworkSharingStatus.Shutdown);
+        fixture.Coordinator.CurrentState.Status.Should().Be(NetworkSharingStatus.Shutdown);
+        fixture.Host.Events.Should().Contain("stop");
+    }
+
+    [Fact]
+    public async Task Host_bind_failure_after_successful_probe_reports_port_conflict()
+    {
+        var fixture = new Fixture();
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5")];
+        fixture.Host.StartException = new IOException("address already in use");
+
+        var state = await fixture.Coordinator.StartAsync();
+
+        state.Status.Should().Be(NetworkSharingStatus.PortConflict);
+        state.PortDiagnostic.Should().Contain("address already in use");
+        fixture.Coordinator.CurrentState.Status.Should().Be(NetworkSharingStatus.PortConflict);
+        fixture.Host.Starts.Should().BeEmpty();
     }
 
     [Fact]
@@ -337,6 +372,40 @@ public sealed class NetworkCoordinatorTests
     }
 
     [Fact]
+    public void Windows_firewall_com_rules_skip_bad_rules_and_release_all_com_objects()
+    {
+        var goodRule = new FakeRawComFirewallRule(
+            WindowsFirewallInspector.ExpectedRuleName,
+            Enabled: true,
+            Action: 1,
+            Protocol: 6,
+            LocalPorts: "43127",
+            Profiles: WindowsFirewallComRuleQuery.PrivateProfile,
+            RemoteAddresses: "LocalSubnet");
+        var badRule = new FakeRawComFirewallRule(
+            "bad",
+            Enabled: true,
+            Action: 1,
+            Protocol: 6,
+            LocalPorts: "43127",
+            Profiles: WindowsFirewallComRuleQuery.PrivateProfile,
+            RemoteAddresses: "LocalSubnet")
+        {
+            ThrowOnPropertyRead = true,
+        };
+        var bridge = new FakeWindowsFirewallComBridge([goodRule, badRule]);
+
+        var rules = new WindowsFirewallComRules(bridge).GetRules();
+
+        rules.Should().ContainSingle(rule => rule.Name == WindowsFirewallInspector.ExpectedRuleName);
+        bridge.Released.Should().Equal(
+            goodRule,
+            badRule,
+            bridge.RuleCollection,
+            bridge.Policy);
+    }
+
+    [Fact]
     public void Windows_network_environment_has_default_production_profile_resolver()
     {
         typeof(WindowsNetworkEnvironment)
@@ -503,6 +572,67 @@ public sealed class NetworkCoordinatorTests
         public IReadOnlyList<ComFirewallRuleSnapshot> GetRules() => rules;
     }
 
+    private sealed class FakeWindowsFirewallComBridge : IWindowsFirewallComBridge
+    {
+        public FakeWindowsFirewallComBridge(IReadOnlyList<FakeRawComFirewallRule> rules)
+        {
+            RuleCollection = new FakeRawComFirewallRuleCollection(rules);
+        }
+
+        public object Policy { get; } = new();
+
+        public FakeRawComFirewallRuleCollection RuleCollection { get; }
+
+        public List<object> Released { get; } = [];
+
+        public object? CreatePolicy() => Policy;
+
+        public object? GetRules(object policy) => RuleCollection;
+
+        public object? GetProperty(object target, string name)
+        {
+            var rule = (FakeRawComFirewallRule)target;
+            if (rule.ThrowOnPropertyRead)
+            {
+                throw new COMException("bad rule");
+            }
+
+            return name switch
+            {
+                "Name" => rule.Name,
+                "Enabled" => rule.Enabled,
+                "Action" => rule.Action,
+                "Protocol" => rule.Protocol,
+                "LocalPorts" => rule.LocalPorts,
+                "Profiles" => rule.Profiles,
+                "RemoteAddresses" => rule.RemoteAddresses,
+                _ => throw new ArgumentException("unknown property", nameof(name)),
+            };
+        }
+
+        public bool IsComObject(object target) => true;
+
+        public void Release(object target) => Released.Add(target);
+    }
+
+    private sealed class FakeRawComFirewallRuleCollection(
+        IReadOnlyList<FakeRawComFirewallRule> rules) : System.Collections.IEnumerable
+    {
+        public System.Collections.IEnumerator GetEnumerator() => rules.GetEnumerator();
+    }
+
+    private sealed record FakeRawComFirewallRule(
+        string Name,
+        bool Enabled,
+        int Action,
+        int Protocol,
+        string LocalPorts,
+        int Profiles,
+        string RemoteAddresses)
+    {
+        public bool ThrowOnPropertyRead { get; init; }
+    }
+
     private sealed class FakeComNetworkList(
         IReadOnlyList<ComNetworkConnectionSnapshot> connections) : IComNetworkList
     {
@@ -518,6 +648,8 @@ public sealed class NetworkCoordinatorTests
 
         public bool BlockStart { get; set; }
 
+        public Exception? StartException { get; set; }
+
         public Task StartEntered => _startEntered.Task;
 
         public List<IPEndPoint> Starts { get; } = [];
@@ -531,6 +663,11 @@ public sealed class NetworkCoordinatorTests
             {
                 await _releaseStart.Task.WaitAsync(cancellationToken);
                 BlockStart = false;
+            }
+
+            if (StartException is not null)
+            {
+                throw StartException;
             }
 
             Starts.Add(endpoint);

@@ -30,7 +30,10 @@ public sealed class SingleInstanceCoordinatorTests
     public async Task Second_launch_times_out_when_mutex_exists_but_pipe_does_not_answer()
     {
         var mutexes = new FakeSingleInstanceMutexFactory { InitiallyOwned = true };
-        var transport = new FakeSingleInstanceTransport { SendSucceeds = false };
+        var transport = new FakeSingleInstanceTransport
+        {
+            SendResult = SingleInstanceSendResult.Unavailable,
+        };
 
         var result = await SingleInstanceCoordinator.TryStartAsync(
             TestOptions(mutexes, transport),
@@ -40,6 +43,23 @@ public sealed class SingleInstanceCoordinatorTests
         result.Error.Should().Contain("ShowTray");
         transport.StartedServers.Should().BeEmpty();
         transport.LastTimeout.Should().Be(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task Second_launch_reports_rejected_when_owner_handler_fails()
+    {
+        var mutexes = new FakeSingleInstanceMutexFactory { InitiallyOwned = true };
+        var transport = new FakeSingleInstanceTransport
+        {
+            SendResult = SingleInstanceSendResult.Rejected,
+        };
+
+        var result = await SingleInstanceCoordinator.TryStartAsync(
+            TestOptions(mutexes, transport),
+            CancellationToken.None);
+
+        result.Role.Should().Be(SingleInstanceRole.SecondaryPipeUnavailable);
+        result.Error.Should().Contain("rejected ShowTray");
     }
 
     [Fact]
@@ -59,15 +79,79 @@ public sealed class SingleInstanceCoordinatorTests
         transport.StartedServers.Single().AllowsCurrentUserOnly.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task Owner_server_uses_injected_message_handler()
+    {
+        var mutexes = new FakeSingleInstanceMutexFactory();
+        var transport = new FakeSingleInstanceTransport();
+        var handled = new List<string>();
+
+        await using var result = await SingleInstanceCoordinator.TryStartAsync(
+            TestOptions(
+                mutexes,
+                transport,
+                onOwnerMessage: (message, _) =>
+                {
+                    handled.Add(message);
+                    return ValueTask.CompletedTask;
+                }),
+            CancellationToken.None);
+
+        await transport.DeliverToOwnerAsync(SingleInstanceCoordinator.ShowTrayMessage);
+
+        result.Role.Should().Be(SingleInstanceRole.Owner);
+        handled.Should().Equal(SingleInstanceCoordinator.ShowTrayMessage);
+    }
+
+    [Fact]
+    public async Task Windows_transport_reports_handler_failure_and_keeps_accepting_messages()
+    {
+        var transport = new WindowsSingleInstanceTransport();
+        var pipeName = "UniversalClipboard.test." + Guid.NewGuid().ToString("N");
+        var handled = new List<string>();
+        await using var server = transport.StartServer(
+            new SingleInstancePipeRegistration(
+                pipeName,
+                "S-1-5-21-test",
+                AllowsCurrentUserOnly: true),
+            (message, _) =>
+            {
+                handled.Add(message);
+                if (message == "fail")
+                {
+                    throw new InvalidOperationException("handler failed");
+                }
+
+                return ValueTask.CompletedTask;
+            });
+
+        var failed = await transport.TrySendAsync(
+            pipeName,
+            "fail",
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+        var succeeded = await transport.TrySendAsync(
+            pipeName,
+            "ok",
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        failed.Should().Be(SingleInstanceSendResult.Rejected);
+        succeeded.Should().Be(SingleInstanceSendResult.Delivered);
+        handled.Should().Equal("fail", "ok");
+    }
+
     private static SingleInstanceCoordinatorOptions TestOptions(
         FakeSingleInstanceMutexFactory mutexes,
         FakeSingleInstanceTransport transport,
-        string sid = "S-1-5-21-test") =>
+        string sid = "S-1-5-21-test",
+        Func<string, CancellationToken, ValueTask>? onOwnerMessage = null) =>
         new(
             new StaticUserIdentity(sid),
             mutexes,
             transport,
-            TimeProvider.System);
+            TimeProvider.System,
+            onOwnerMessage);
 
     private sealed class StaticUserIdentity(string sid) : IUserIdentity
     {
@@ -113,11 +197,14 @@ public sealed class SingleInstanceCoordinatorTests
 
     private sealed class FakeSingleInstanceTransport : ISingleInstanceTransport
     {
-        public bool SendSucceeds { get; set; } = true;
+        public SingleInstanceSendResult SendResult { get; set; } =
+            SingleInstanceSendResult.Delivered;
 
         public List<SingleInstancePipeRegistration> StartedServers { get; } = [];
 
         public List<string> SentMessages { get; } = [];
+
+        public List<Func<string, CancellationToken, ValueTask>> Handlers { get; } = [];
 
         public TimeSpan? LastTimeout { get; private set; }
 
@@ -126,23 +213,27 @@ public sealed class SingleInstanceCoordinatorTests
             Func<string, CancellationToken, ValueTask> onMessage)
         {
             StartedServers.Add(registration);
+            Handlers.Add(onMessage);
             return new FakeServer();
         }
 
-        public ValueTask<bool> TrySendAsync(
+        public ValueTask<SingleInstanceSendResult> TrySendAsync(
             string pipeName,
             string message,
             TimeSpan timeout,
             CancellationToken cancellationToken)
         {
             LastTimeout = timeout;
-            if (SendSucceeds)
+            if (SendResult == SingleInstanceSendResult.Delivered)
             {
                 SentMessages.Add(message);
             }
 
-            return ValueTask.FromResult(SendSucceeds);
+            return ValueTask.FromResult(SendResult);
         }
+
+        public async ValueTask DeliverToOwnerAsync(string message) =>
+            await Handlers.Single()(message, CancellationToken.None);
 
         private sealed class FakeServer : ISingleInstancePipeServer
         {

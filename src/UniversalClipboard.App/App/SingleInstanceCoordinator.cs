@@ -26,7 +26,7 @@ public interface ISingleInstanceTransport
         SingleInstancePipeRegistration registration,
         Func<string, CancellationToken, ValueTask> onMessage);
 
-    ValueTask<bool> TrySendAsync(
+    ValueTask<SingleInstanceSendResult> TrySendAsync(
         string pipeName,
         string message,
         TimeSpan timeout,
@@ -42,13 +42,21 @@ public sealed record SingleInstanceCoordinatorOptions(
     IUserIdentity UserIdentity,
     ISingleInstanceMutexFactory MutexFactory,
     ISingleInstanceTransport Transport,
-    TimeProvider TimeProvider);
+    TimeProvider TimeProvider,
+    Func<string, CancellationToken, ValueTask>? OnOwnerMessage = null);
 
 public enum SingleInstanceRole
 {
     Owner,
     SecondaryNotified,
     SecondaryPipeUnavailable,
+}
+
+public enum SingleInstanceSendResult
+{
+    Delivered,
+    Rejected,
+    Unavailable,
 }
 
 public sealed class SingleInstanceCoordinatorResult : IAsyncDisposable
@@ -111,7 +119,7 @@ public sealed class SingleInstanceCoordinator
                 AllowsCurrentUserOnly: true);
             var server = options.Transport.StartServer(
                 registration,
-                static (_, _) => ValueTask.CompletedTask);
+                options.OnOwnerMessage ?? IgnoreOwnerMessageAsync);
             return new SingleInstanceCoordinatorResult(
                 SingleInstanceRole.Owner,
                 mutex,
@@ -119,21 +127,28 @@ public sealed class SingleInstanceCoordinator
         }
 
         mutex.Dispose();
-        var sent = await options.Transport.TrySendAsync(
+        var sendResult = await options.Transport.TrySendAsync(
             pipeName,
             ShowTrayMessage,
             SecondInstanceTimeout,
             cancellationToken);
-        return sent
-            ? new SingleInstanceCoordinatorResult(
+        return sendResult switch
+        {
+            SingleInstanceSendResult.Delivered => new SingleInstanceCoordinatorResult(
                 SingleInstanceRole.SecondaryNotified,
                 null,
-                null)
-            : new SingleInstanceCoordinatorResult(
+                null),
+            SingleInstanceSendResult.Rejected => new SingleInstanceCoordinatorResult(
                 SingleInstanceRole.SecondaryPipeUnavailable,
                 null,
                 null,
-                "Existing Universal Clipboard instance did not accept ShowTray within 2 seconds.");
+                "Existing Universal Clipboard instance rejected ShowTray."),
+            _ => new SingleInstanceCoordinatorResult(
+                SingleInstanceRole.SecondaryPipeUnavailable,
+                null,
+                null,
+                "Existing Universal Clipboard instance did not accept ShowTray within 2 seconds."),
+        };
     }
 
     private static string BuildMutexName(string sid) =>
@@ -141,6 +156,11 @@ public sealed class SingleInstanceCoordinator
 
     private static string BuildPipeName(string sid) =>
         $"UniversalClipboard.pipe.{sid}";
+
+    private static ValueTask IgnoreOwnerMessageAsync(
+        string message,
+        CancellationToken cancellationToken) =>
+        ValueTask.CompletedTask;
 }
 
 public sealed class WindowsUserIdentity : IUserIdentity
@@ -180,6 +200,9 @@ public sealed class WindowsSingleInstanceMutexFactory : ISingleInstanceMutexFact
 
 public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
 {
+    private const string AckOk = "OK";
+    private const string AckError = "ERROR";
+
     public ISingleInstancePipeServer StartServer(
         SingleInstancePipeRegistration registration,
         Func<string, CancellationToken, ValueTask> onMessage)
@@ -194,7 +217,7 @@ public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
         return new WindowsPipeServer(registration.PipeName, onMessage);
     }
 
-    public async ValueTask<bool> TrySendAsync(
+    public async ValueTask<SingleInstanceSendResult> TrySendAsync(
         string pipeName,
         string message,
         TimeSpan timeout,
@@ -207,24 +230,28 @@ public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
             await using var client = new NamedPipeClientStream(
                 ".",
                 pipeName,
-                PipeDirection.Out,
+                PipeDirection.InOut,
                 PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             await client.ConnectAsync(timeoutSource.Token);
-            await using var writer = new StreamWriter(client) { AutoFlush = true };
+            await using var writer = new StreamWriter(client, leaveOpen: true) { AutoFlush = true };
+            using var reader = new StreamReader(client, leaveOpen: true);
             await writer.WriteLineAsync(message.AsMemory(), timeoutSource.Token);
-            return true;
+            var ack = await reader.ReadLineAsync(timeoutSource.Token);
+            return string.Equals(ack, AckOk, StringComparison.Ordinal)
+                ? SingleInstanceSendResult.Delivered
+                : SingleInstanceSendResult.Rejected;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return false;
+            return SingleInstanceSendResult.Unavailable;
         }
         catch (IOException)
         {
-            return false;
+            return SingleInstanceSendResult.Unavailable;
         }
         catch (UnauthorizedAccessException)
         {
-            return false;
+            return SingleInstanceSendResult.Unavailable;
         }
     }
 
@@ -264,18 +291,34 @@ public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
             {
                 await using var server = new NamedPipeServerStream(
                     _pipeName,
-                    PipeDirection.In,
+                    PipeDirection.InOut,
                     maxNumberOfServerInstances: 1,
                     PipeTransmissionMode.Byte,
                     PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 try
                 {
                     await server.WaitForConnectionAsync(_shutdown.Token);
-                    using var reader = new StreamReader(server);
+                    using var reader = new StreamReader(server, leaveOpen: true);
+                    await using var writer = new StreamWriter(server, leaveOpen: true)
+                    {
+                        AutoFlush = true,
+                    };
                     var message = await reader.ReadLineAsync(_shutdown.Token);
                     if (message is not null)
                     {
-                        await _onMessage(message, _shutdown.Token);
+                        try
+                        {
+                            await _onMessage(message, _shutdown.Token);
+                            await writer.WriteLineAsync(AckOk.AsMemory(), _shutdown.Token);
+                        }
+                        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+                        {
+                            return;
+                        }
+                        catch (Exception)
+                        {
+                            await writer.WriteLineAsync(AckError.AsMemory(), _shutdown.Token);
+                        }
                     }
                 }
                 catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)

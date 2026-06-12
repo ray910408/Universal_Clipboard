@@ -1,6 +1,7 @@
 using System.Net.NetworkInformation;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using UniversalClipboard.App.Web;
 using UniversalClipboard.Core.Authorization;
@@ -209,29 +210,31 @@ public sealed class WindowsFirewallComRuleQuery(IComFirewallRules rules) : IFire
 
 public sealed class WindowsFirewallComRules : IComFirewallRules
 {
+    private readonly IWindowsFirewallComBridge _bridge;
+
+    public WindowsFirewallComRules()
+        : this(new ReflectionWindowsFirewallComBridge())
+    {
+    }
+
+    internal WindowsFirewallComRules(IWindowsFirewallComBridge bridge)
+    {
+        _bridge = bridge;
+    }
+
     public IReadOnlyList<ComFirewallRuleSnapshot> GetRules()
     {
-        var policyType = Type.GetTypeFromProgID("HNetCfg.FwPolicy2");
-        if (policyType is null)
-        {
-            return [];
-        }
-
         object? policy = null;
+        object? rules = null;
         try
         {
-            policy = Activator.CreateInstance(policyType);
+            policy = _bridge.CreatePolicy();
             if (policy is null)
             {
                 return [];
             }
 
-            var rules = policyType.InvokeMember(
-                "Rules",
-                System.Reflection.BindingFlags.GetProperty,
-                null,
-                policy,
-                null);
+            rules = _bridge.GetRules(policy);
             if (rules is not System.Collections.IEnumerable enumerable)
             {
                 return [];
@@ -240,14 +243,33 @@ public sealed class WindowsFirewallComRules : IComFirewallRules
             var snapshots = new List<ComFirewallRuleSnapshot>();
             foreach (var rule in enumerable)
             {
-                snapshots.Add(new ComFirewallRuleSnapshot(
-                    GetProperty<string>(rule, "Name") ?? "",
-                    GetProperty<bool>(rule, "Enabled"),
-                    GetProperty<int>(rule, "Action"),
-                    GetProperty<int>(rule, "Protocol"),
-                    GetProperty<string>(rule, "LocalPorts") ?? "",
-                    GetProperty<int>(rule, "Profiles"),
-                    GetProperty<string>(rule, "RemoteAddresses") ?? ""));
+                try
+                {
+                    snapshots.Add(new ComFirewallRuleSnapshot(
+                        GetProperty<string>(rule, "Name") ?? "",
+                        GetProperty<bool>(rule, "Enabled"),
+                        GetProperty<int>(rule, "Action"),
+                        GetProperty<int>(rule, "Protocol"),
+                        GetProperty<string>(rule, "LocalPorts") ?? "",
+                        GetProperty<int>(rule, "Profiles"),
+                        GetProperty<string>(rule, "RemoteAddresses") ?? ""));
+                }
+                catch (COMException)
+                {
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+                catch (ArgumentException)
+                {
+                }
+                catch (TargetInvocationException)
+                {
+                }
+                finally
+                {
+                    ReleaseIfComObject(rule);
+                }
             }
 
             return snapshots;
@@ -262,23 +284,66 @@ public sealed class WindowsFirewallComRules : IComFirewallRules
         }
         finally
         {
-            if (policy is not null && Marshal.IsComObject(policy))
-            {
-                Marshal.ReleaseComObject(policy);
-            }
+            ReleaseIfComObject(rules);
+            ReleaseIfComObject(policy);
         }
     }
 
-    private static T? GetProperty<T>(object target, string name)
+    private T? GetProperty<T>(object target, string name)
     {
-        var value = target.GetType().InvokeMember(
+        var value = _bridge.GetProperty(target, name);
+        return value is T typed ? typed : default;
+    }
+
+    private void ReleaseIfComObject(object? target)
+    {
+        if (target is not null && _bridge.IsComObject(target))
+        {
+            _bridge.Release(target);
+        }
+    }
+}
+
+internal interface IWindowsFirewallComBridge
+{
+    object? CreatePolicy();
+
+    object? GetRules(object policy);
+
+    object? GetProperty(object target, string name);
+
+    bool IsComObject(object target);
+
+    void Release(object target);
+}
+
+internal sealed class ReflectionWindowsFirewallComBridge : IWindowsFirewallComBridge
+{
+    public object? CreatePolicy()
+    {
+        var policyType = Type.GetTypeFromProgID("HNetCfg.FwPolicy2");
+        return policyType is null ? null : Activator.CreateInstance(policyType);
+    }
+
+    public object? GetRules(object policy) =>
+        policy.GetType().InvokeMember(
+            "Rules",
+            BindingFlags.GetProperty,
+            null,
+            policy,
+            null);
+
+    public object? GetProperty(object target, string name) =>
+        target.GetType().InvokeMember(
             name,
-            System.Reflection.BindingFlags.GetProperty,
+            BindingFlags.GetProperty,
             null,
             target,
             null);
-        return value is T typed ? typed : default;
-    }
+
+    public bool IsComObject(object target) => Marshal.IsComObject(target);
+
+    public void Release(object target) => Marshal.ReleaseComObject(target);
 }
 
 public interface ILocalWebHostController
@@ -343,6 +408,7 @@ public sealed class NetworkCoordinator
     private string? _selectedInterfaceId;
     private IPEndPoint? _runningEndpoint;
     private bool _shutdown = true;
+    private long _lifecycleVersion;
     private NetworkSharingState _currentState = NetworkSharingState.Initial;
 
     public NetworkCoordinator(
@@ -365,13 +431,19 @@ public sealed class NetworkCoordinator
 
     public Task<NetworkSharingState> StartAsync(CancellationToken cancellationToken = default)
     {
-        _shutdown = false;
+        if (Volatile.Read(ref _shutdown))
+        {
+            Interlocked.Increment(ref _lifecycleVersion);
+        }
+
+        Volatile.Write(ref _shutdown, false);
         return RefreshAsync(cancellationToken);
     }
 
     public async Task<NetworkSharingState> ShutdownAsync(CancellationToken cancellationToken = default)
     {
-        _shutdown = true;
+        Volatile.Write(ref _shutdown, true);
+        Interlocked.Increment(ref _lifecycleVersion);
         await StopRunningHostAsync(cancellationToken);
         var state = NetworkSharingState.Initial;
         Publish(state);
@@ -383,6 +455,7 @@ public sealed class NetworkCoordinator
         CancellationToken cancellationToken = default)
     {
         _selectedInterfaceId = interfaceId;
+        Interlocked.Increment(ref _lifecycleVersion);
         return RefreshAsync(cancellationToken);
     }
 
@@ -406,7 +479,7 @@ public sealed class NetworkCoordinator
         while (true)
         {
             NetworkSharingState state;
-            if (_shutdown)
+            if (Volatile.Read(ref _shutdown))
             {
                 await StopRunningHostAsync(cancellationToken);
                 state = NetworkSharingState.Initial;
@@ -432,7 +505,13 @@ public sealed class NetworkCoordinator
 
     private async Task<NetworkSharingState> EvaluateAsync(CancellationToken cancellationToken)
     {
+        var lifecycleVersion = Volatile.Read(ref _lifecycleVersion);
         var interfaces = await _environment.GetInterfacesAsync(cancellationToken);
+        if (!IsEvaluationCurrent(lifecycleVersion))
+        {
+            return await StopStaleEvaluationAsync(cancellationToken);
+        }
+
         if (interfaces.Any(IsPublicProfileCandidate))
         {
             await StopRunningHostAndInvalidateAsync(cancellationToken);
@@ -517,9 +596,19 @@ public sealed class NetworkCoordinator
         var staleRemoval = await _authorization.RemoveStaleBindingsAsync(
             [address],
             cancellationToken);
+        if (!IsEvaluationCurrent(lifecycleVersion))
+        {
+            return await StopStaleEvaluationAsync(cancellationToken);
+        }
+
         if (!staleRemoval.Succeeded)
         {
             return Publish(AuthPersistenceFailedState(selected, address));
+        }
+
+        if (!IsEvaluationCurrent(lifecycleVersion))
+        {
+            return await StopStaleEvaluationAsync(cancellationToken);
         }
 
         Publish(new NetworkSharingState(
@@ -532,9 +621,55 @@ public sealed class NetworkCoordinator
             IsPortListening: false,
             _firewall.Inspect(LocalWebHost.Port).Status,
             null));
-        await _host.StartAsync(endpoint, cancellationToken);
+        try
+        {
+            await _host.StartAsync(endpoint, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (IsHostStartPortConflict(exception))
+        {
+            if (!IsEvaluationCurrent(lifecycleVersion))
+            {
+                return await StopStaleEvaluationAsync(cancellationToken);
+            }
+
+            _runningEndpoint = null;
+            return Publish(new NetworkSharingState(
+                NetworkSharingStatus.PortConflict,
+                selected.Id,
+                address,
+                null,
+                selected.Profile,
+                LocalWebHost.Port,
+                IsPortListening: false,
+                _firewall.Inspect(LocalWebHost.Port).Status,
+                exception.Message));
+        }
+
+        if (!IsEvaluationCurrent(lifecycleVersion))
+        {
+            _runningEndpoint = endpoint;
+            return await StopStaleEvaluationAsync(cancellationToken);
+        }
+
         _runningEndpoint = endpoint;
         return Publish(RunningState(selected, address));
+    }
+
+    private bool IsEvaluationCurrent(long lifecycleVersion) =>
+        !Volatile.Read(ref _shutdown) &&
+        Volatile.Read(ref _lifecycleVersion) == lifecycleVersion;
+
+    private async ValueTask<NetworkSharingState> StopStaleEvaluationAsync(
+        CancellationToken cancellationToken)
+    {
+        await StopRunningHostAsync(cancellationToken);
+        return Volatile.Read(ref _shutdown)
+            ? Publish(NetworkSharingState.Initial)
+            : CurrentState;
     }
 
     private async ValueTask StopRunningHostAndInvalidateAsync(CancellationToken cancellationToken)
@@ -590,6 +725,11 @@ public sealed class NetworkCoordinator
         NetworkInterfaceSelector.IsUsableLanInterface(item) &&
         item.Profile == NetworkProfile.Public &&
         item.Ipv4Addresses.Any(NetworkInterfaceSelector.IsPrivateIpv4);
+
+    private static bool IsHostStartPortConflict(Exception exception) =>
+        exception is IOException or SocketException ||
+        exception is InvalidOperationException &&
+        exception.Message.Contains("address", StringComparison.OrdinalIgnoreCase);
 
     private static string BuildUrl(IPAddress address) =>
         $"http://{address}:{LocalWebHost.Port}/";
