@@ -77,6 +77,23 @@ public sealed class LocalWebHostTests
         fixture.Coordinator.List().Single().Label.Should().Be("My iPhone");
     }
 
+    [Fact]
+    public async Task Pair_exchange_uses_duration_bound_to_generated_code()
+    {
+        var duration = AuthorizationDuration.OneHour;
+        await using var fixture = await HostFixture.StartAsync(
+            pairingDurationProvider: () => duration);
+        var code = fixture.PairingCodes.Create(duration).Value;
+        duration = AuthorizationDuration.OneWeek;
+
+        var response = await fixture.PostPairAsync(code, "Phone");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var authorization = fixture.Coordinator.List().Single();
+        authorization.ExpiresAtUtc.Should().Be(
+            authorization.CreatedAtUtc.AddHours(1));
+    }
+
     [Theory]
     [InlineData("{\"code\":\"bad\",\"label\":\"Phone\"}")]
     [InlineData("{\"code\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"extra\":1}")]
@@ -193,7 +210,7 @@ public sealed class LocalWebHostTests
         await using var fixture = await HostFixture.StartAsync(
             pairingDuration: AuthorizationDuration.Permanent);
         var response = await fixture.PostPairAsync(
-            fixture.PairingCodes.Create().Value,
+            fixture.PairingCodes.Create(AuthorizationDuration.Permanent).Value,
             "Phone");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -475,6 +492,35 @@ public sealed class LocalWebHostTests
     }
 
     [Fact]
+    public async Task Shutdown_reports_incomplete_when_handlers_ignore_cancel_join()
+    {
+        var writer = new BlockingClipResponseWriter();
+        await using var fixture = await HostFixture.StartAsync(
+            responseWriter: writer,
+            timeouts: new LocalWebHostTimeouts(
+                TimeSpan.FromMilliseconds(25),
+                TimeSpan.FromMilliseconds(25)));
+        fixture.History.Add("active response");
+        var cookie = await fixture.PairAndGetCookieAsync();
+        var request = fixture.GetClipsAsync(
+            cookie,
+            completionOption: HttpCompletionOption.ResponseHeadersRead);
+        await writer.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var result = await fixture.Host.StopAsync();
+        writer.Release();
+
+        result.CompletedOrderly.Should().BeFalse();
+        try
+        {
+            await request;
+        }
+        catch (HttpRequestException)
+        {
+        }
+    }
+
+    [Fact]
     public void Production_shutdown_timeouts_are_five_second_drain_and_two_second_join()
     {
         LocalWebHostTimeouts.Production.Drain.Should().Be(TimeSpan.FromSeconds(5));
@@ -636,6 +682,7 @@ public sealed class LocalWebHostTests
             CapturingLoggerProvider? loggerProvider = null,
             IClipResponseWriter? responseWriter = null,
             AuthorizationDuration pairingDuration = AuthorizationDuration.FiveHours,
+            Func<AuthorizationDuration>? pairingDurationProvider = null,
             LocalWebHostTimeouts? timeouts = null,
             Func<AuthorizationCoordinator, IAuthorizationService>?
                 authorizationServiceFactory = null)
@@ -645,6 +692,7 @@ public sealed class LocalWebHostTests
                 loggerProvider,
                 responseWriter,
                 pairingDuration,
+                pairingDurationProvider,
                 timeouts,
                 authorizationServiceFactory);
             await fixture.Host.StartAsync();
@@ -656,6 +704,7 @@ public sealed class LocalWebHostTests
             CapturingLoggerProvider? loggerProvider = null,
             IClipResponseWriter? responseWriter = null,
             AuthorizationDuration pairingDuration = AuthorizationDuration.FiveHours,
+            Func<AuthorizationDuration>? pairingDurationProvider = null,
             LocalWebHostTimeouts? timeouts = null,
             Func<AuthorizationCoordinator, IAuthorizationService>?
                 authorizationServiceFactory = null)
@@ -679,7 +728,7 @@ public sealed class LocalWebHostTests
                 Endpoint,
                 authorizationServiceFactory?.Invoke(coordinator) ?? coordinator,
                 () => history.Snapshot,
-                pairingDuration,
+                pairingDurationProvider ?? (() => pairingDuration),
                 clock,
                 loggerFactory,
                 responseWriter,

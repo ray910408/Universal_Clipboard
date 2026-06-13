@@ -36,8 +36,15 @@ public sealed class PairingCodeManager
         _entropySource = entropySource ?? CryptographicEntropySource.Shared;
     }
 
-    public PairingCode Create()
+    public PairingCode Create() => Create(AuthorizationDuration.FiveHours);
+
+    public PairingCode Create(AuthorizationDuration duration)
     {
+        if (!Enum.IsDefined(duration))
+        {
+            throw new ArgumentOutOfRangeException(nameof(duration));
+        }
+
         Span<byte> bytes = stackalloc byte[EntropyByteCount];
         _entropySource.Fill(bytes);
 
@@ -46,14 +53,27 @@ public sealed class PairingCodeManager
 
         lock (_gate)
         {
-            _activeCode = new ActivePairingCode(value, expiresAtUtc);
+            _activeCode = new ActivePairingCode(value, expiresAtUtc, duration);
         }
 
-        return new PairingCode(value, expiresAtUtc);
+        return new PairingCode(value, expiresAtUtc, duration);
     }
 
-    public bool TryConsume(string? value)
+    public void Invalidate()
     {
+        lock (_gate)
+        {
+            _activeCode = null;
+        }
+    }
+
+    public bool TryConsume(string? value) => TryConsume(value, out _);
+
+    public bool TryConsume(
+        string? value,
+        out AuthorizationDuration duration)
+    {
+        duration = default;
         if (string.IsNullOrEmpty(value))
         {
             return false;
@@ -74,6 +94,7 @@ public sealed class PairingCodeManager
             }
 
             _activeCode = null;
+            duration = activeCode.Duration;
             return true;
         }
     }
@@ -85,5 +106,8 @@ public sealed class PairingCodeManager
         return CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
     }
 
-    private sealed record ActivePairingCode(string Value, DateTimeOffset ExpiresAtUtc);
+    private sealed record ActivePairingCode(
+        string Value,
+        DateTimeOffset ExpiresAtUtc,
+        AuthorizationDuration Duration);
 }

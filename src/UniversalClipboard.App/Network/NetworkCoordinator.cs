@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Net.NetworkInformation;
 using System.Net;
 using System.Net.Sockets;
@@ -379,7 +380,8 @@ public sealed record NetworkSharingState(
     int Port,
     bool IsPortListening,
     FirewallRuleStatus FirewallRuleStatus,
-    string? PortDiagnostic)
+    string? PortDiagnostic,
+    ImmutableArray<NetworkInterfaceSelectionOption> InterfaceOptions = default)
 {
     public static NetworkSharingState Initial { get; } =
         new(
@@ -393,6 +395,11 @@ public sealed record NetworkSharingState(
             FirewallRuleStatus.Unknown,
             null);
 }
+
+public sealed record NetworkInterfaceSelectionOption(
+    string InterfaceId,
+    string DisplayName,
+    IPAddress Address);
 
 public sealed class NetworkCoordinator
 {
@@ -555,7 +562,8 @@ public sealed class NetworkCoordinator
                 LocalWebHost.Port,
                 IsPortListening: false,
                 _firewall.Inspect(LocalWebHost.Port).Status,
-                null));
+                null,
+                ToInterfaceOptions(selection.EligibleInterfaces)));
         }
 
         var selected = selection.Selected!;
@@ -725,6 +733,15 @@ public sealed class NetworkCoordinator
         NetworkInterfaceSelector.IsUsableLanInterface(item) &&
         item.Profile == NetworkProfile.Public &&
         item.Ipv4Addresses.Any(NetworkInterfaceSelector.IsPrivateIpv4);
+
+    private static ImmutableArray<NetworkInterfaceSelectionOption> ToInterfaceOptions(
+        ImmutableArray<NetworkInterfaceState> interfaces) =>
+        interfaces
+            .Select(item => new NetworkInterfaceSelectionOption(
+                item.Id,
+                item.Name,
+                NetworkInterfaceSelector.FirstPrivateIpv4(item)))
+            .ToImmutableArray();
 
     private static bool IsHostStartPortConflict(Exception exception) =>
         exception is IOException or SocketException ||

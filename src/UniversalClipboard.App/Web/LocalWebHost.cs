@@ -31,7 +31,21 @@ public sealed record LocalWebHostTimeouts(TimeSpan Drain, TimeSpan CancelJoin)
         new(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(2));
 }
 
-public sealed class LocalWebHost : IAsyncDisposable
+public sealed record LocalWebHostStopResult(bool CompletedOrderly)
+{
+    public static LocalWebHostStopResult Orderly { get; } = new(true);
+
+    public static LocalWebHostStopResult Incomplete { get; } = new(false);
+}
+
+internal interface ILocalWebHostInstance : IAsyncDisposable
+{
+    Task StartAsync(CancellationToken cancellationToken = default);
+
+    Task<LocalWebHostStopResult> StopAsync(CancellationToken cancellationToken = default);
+}
+
+public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
 {
     public const int Port = 43127;
     public const string ContentSecurityPolicy =
@@ -49,7 +63,7 @@ public sealed class LocalWebHost : IAsyncDisposable
     private readonly IPEndPoint _endpoint;
     private readonly IAuthorizationService _authorization;
     private readonly Func<ClipboardSnapshot> _snapshotProvider;
-    private readonly AuthorizationDuration _pairingDuration;
+    private readonly Func<AuthorizationDuration> _pairingDurationProvider;
     private readonly TimeProvider _timeProvider;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger _logger;
@@ -58,7 +72,11 @@ public sealed class LocalWebHost : IAsyncDisposable
     private readonly RequestRateLimiter _pairRateLimiter;
     private readonly RequestRateLimiter _clipRateLimiter;
     private readonly CancellationTokenSource _handlerShutdown = new();
+    private readonly object _handlerGate = new();
+    private TaskCompletionSource _handlersDrained =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private WebApplication? _application;
+    private int _activeHandlers;
     private int _stopStarted;
 
     public LocalWebHost(
@@ -70,10 +88,32 @@ public sealed class LocalWebHost : IAsyncDisposable
         ILoggerFactory? loggerFactory = null,
         IClipResponseWriter? responseWriter = null,
         LocalWebHostTimeouts? timeouts = null)
+        : this(
+            endpoint,
+            authorization,
+            snapshotProvider,
+            () => pairingDuration,
+            timeProvider,
+            loggerFactory,
+            responseWriter,
+            timeouts)
+    {
+    }
+
+    public LocalWebHost(
+        IPEndPoint endpoint,
+        IAuthorizationService authorization,
+        Func<ClipboardSnapshot> snapshotProvider,
+        Func<AuthorizationDuration> pairingDurationProvider,
+        TimeProvider? timeProvider = null,
+        ILoggerFactory? loggerFactory = null,
+        IClipResponseWriter? responseWriter = null,
+        LocalWebHostTimeouts? timeouts = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
         ArgumentNullException.ThrowIfNull(authorization);
         ArgumentNullException.ThrowIfNull(snapshotProvider);
+        ArgumentNullException.ThrowIfNull(pairingDurationProvider);
         if (endpoint.AddressFamily != AddressFamily.InterNetwork || endpoint.Port != Port)
         {
             throw new ArgumentException(
@@ -84,7 +124,7 @@ public sealed class LocalWebHost : IAsyncDisposable
         _endpoint = endpoint;
         _authorization = authorization;
         _snapshotProvider = snapshotProvider;
-        _pairingDuration = pairingDuration;
+        _pairingDurationProvider = pairingDurationProvider;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _loggerFactory = loggerFactory ?? LoggerFactory.Create(builder => builder.ClearProviders());
         _logger = _loggerFactory.CreateLogger<LocalWebHost>();
@@ -133,12 +173,12 @@ public sealed class LocalWebHost : IAsyncDisposable
         }
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken = default)
+    public async Task<LocalWebHostStopResult> StopAsync(CancellationToken cancellationToken = default)
     {
         var application = _application;
         if (application is null || Interlocked.Exchange(ref _stopStarted, 1) != 0)
         {
-            return;
+            return LocalWebHostStopResult.Orderly;
         }
 
         using var drain = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -146,10 +186,14 @@ public sealed class LocalWebHost : IAsyncDisposable
         try
         {
             await application.StopAsync(drain.Token);
-            return;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+        }
+
+        if (Volatile.Read(ref _activeHandlers) == 0)
+        {
+            return LocalWebHostStopResult.Orderly;
         }
 
         _handlerShutdown.Cancel();
@@ -158,10 +202,16 @@ public sealed class LocalWebHost : IAsyncDisposable
         try
         {
             await application.StopAsync(join.Token);
+            await WaitForHandlersDrainedAsync(join.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            return LocalWebHostStopResult.Incomplete;
         }
+
+        return Volatile.Read(ref _activeHandlers) == 0
+            ? LocalWebHostStopResult.Orderly
+            : LocalWebHostStopResult.Incomplete;
     }
 
     public async ValueTask DisposeAsync()
@@ -177,6 +227,7 @@ public sealed class LocalWebHost : IAsyncDisposable
 
     private async Task DispatchAsync(HttpContext context)
     {
+        BeginHandler();
         ApplySecurityHeaders(context.Response);
         var started = Stopwatch.GetTimestamp();
         var route = context.Request.Path.Value ?? "/";
@@ -274,6 +325,43 @@ public sealed class LocalWebHost : IAsyncDisposable
                 context.Response.StatusCode,
                 duration,
                 source);
+            EndHandler();
+        }
+    }
+
+    private void BeginHandler()
+    {
+        lock (_handlerGate)
+        {
+            if (_activeHandlers == 0)
+            {
+                _handlersDrained = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            _activeHandlers++;
+        }
+    }
+
+    private void EndHandler()
+    {
+        lock (_handlerGate)
+        {
+            _activeHandlers--;
+            if (_activeHandlers == 0)
+            {
+                _handlersDrained.TrySetResult();
+            }
+        }
+    }
+
+    private Task WaitForHandlersDrainedAsync(CancellationToken cancellationToken)
+    {
+        lock (_handlerGate)
+        {
+            return _activeHandlers == 0
+                ? Task.CompletedTask
+                : _handlersDrained.Task.WaitAsync(cancellationToken);
         }
     }
 
@@ -356,7 +444,7 @@ public sealed class LocalWebHost : IAsyncDisposable
                 pairingCode,
                 label,
                 _endpoint.Address,
-                _pairingDuration),
+                _pairingDurationProvider()),
             exchangeCancellation.Token);
 
         if (!result.Succeeded)

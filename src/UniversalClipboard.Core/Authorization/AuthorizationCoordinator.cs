@@ -82,7 +82,7 @@ public sealed class AuthorizationCoordinator :
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (!_pairingCodes.TryConsume(request.PairingCode))
+        if (!_pairingCodes.TryConsume(request.PairingCode, out var duration))
         {
             return ValueTask.FromResult(
                 ExchangeAuthorizationResult.Failed(AuthorizationFailure.InvalidPairingCode));
@@ -94,7 +94,7 @@ public sealed class AuthorizationCoordinator :
             issue = _tokenService.Issue(
                 request.Label,
                 request.BoundHostIpv4,
-                request.Duration);
+                duration);
         }
         catch (ArgumentException)
         {

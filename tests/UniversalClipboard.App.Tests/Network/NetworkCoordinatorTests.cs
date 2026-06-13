@@ -29,7 +29,10 @@ public sealed class NetworkCoordinatorTests
             Iface("eth", "10.0.0.5"),
             Iface("wifi", "192.168.1.5"),
         ];
-        (await fixture.Coordinator.StartAsync()).Status.Should().Be(NetworkSharingStatus.SelectionRequired);
+        var selectionRequired = await fixture.Coordinator.StartAsync();
+        selectionRequired.Status.Should().Be(NetworkSharingStatus.SelectionRequired);
+        selectionRequired.InterfaceOptions.Select(item => item.InterfaceId)
+            .Should().Equal("eth", "wifi");
 
         fixture.Ports.Available = false;
         fixture.Ports.OwnerDiagnostic = "pid=42 name=other";

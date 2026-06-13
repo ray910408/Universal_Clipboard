@@ -13,11 +13,12 @@ public sealed class PairingCodeManagerTests
         var clock = new ManualTimeProvider(new DateTimeOffset(2026, 6, 12, 0, 0, 0, TimeSpan.Zero));
         var manager = new PairingCodeManager(clock, entropy);
 
-        var pairingCode = manager.Create();
+        var pairingCode = manager.Create(AuthorizationDuration.OneWeek);
 
         pairingCode.Value.Should().Be("AAECAwQFBgcICQoLDA0ODxAREhMUFRYX");
         pairingCode.Value.Should().NotContain("=");
         pairingCode.ExpiresAtUtc.Should().Be(clock.GetUtcNow().AddMinutes(2));
+        pairingCode.Duration.Should().Be(AuthorizationDuration.OneWeek);
         entropy.RequestedLengths.Should().Equal(24);
     }
 
@@ -31,8 +32,23 @@ public sealed class PairingCodeManagerTests
         var first = manager.Create();
         var second = manager.Create();
 
-        manager.TryConsume(first.Value).Should().BeFalse();
-        manager.TryConsume(second.Value).Should().BeTrue();
+        manager.TryConsume(first.Value, out _).Should().BeFalse();
+        manager.TryConsume(second.Value, out var duration).Should().BeTrue();
+        duration.Should().Be(AuthorizationDuration.FiveHours);
+    }
+
+    [Fact]
+    public void Invalidate_removes_active_code_without_creating_a_replacement()
+    {
+        var manager = new PairingCodeManager(
+            new ManualTimeProvider(DateTimeOffset.UtcNow),
+            new QueueEntropySource(new byte[24], Enumerable.Repeat((byte)1, 24).ToArray()));
+        var active = manager.Create();
+
+        manager.Invalidate();
+
+        manager.TryConsume(active.Value, out _).Should().BeFalse();
+        manager.TryConsume("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB", out _).Should().BeFalse();
     }
 
     [Fact]
@@ -44,7 +60,7 @@ public sealed class PairingCodeManagerTests
 
         clock.Advance(TimeSpan.FromMinutes(2));
 
-        manager.TryConsume(code.Value).Should().BeFalse();
+        manager.TryConsume(code.Value, out _).Should().BeFalse();
     }
 
     [Fact]
@@ -60,7 +76,9 @@ public sealed class PairingCodeManagerTests
         var consumers = Enumerable.Range(0, 32).Select(_ => Task.Run(() =>
         {
             start.Wait();
-            results.Add(manager.TryConsume(code.Value));
+            results.Add(manager.TryConsume(
+                code.Value,
+                out AuthorizationDuration _));
         })).ToArray();
 
         start.Set();

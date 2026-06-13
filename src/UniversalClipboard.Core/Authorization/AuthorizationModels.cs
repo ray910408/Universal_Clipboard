@@ -164,15 +164,21 @@ public sealed class AuthorizationLease : IDisposable
 
 public sealed class PairingCode
 {
-    internal PairingCode(string value, DateTimeOffset expiresAtUtc)
+    internal PairingCode(
+        string value,
+        DateTimeOffset expiresAtUtc,
+        AuthorizationDuration duration)
     {
         Value = value;
         ExpiresAtUtc = expiresAtUtc;
+        Duration = duration;
     }
 
     public string Value { get; }
 
     public DateTimeOffset ExpiresAtUtc { get; }
+
+    public AuthorizationDuration Duration { get; }
 
     public override string ToString() => "[REDACTED]";
 }
