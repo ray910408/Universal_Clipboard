@@ -290,6 +290,13 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
                 return;
             }
 
+            if (route == "/favicon.ico" &&
+                context.Request.Method == HttpMethods.Get)
+            {
+                context.Response.StatusCode = StatusCodes.Status204NoContent;
+                return;
+            }
+
             var asset = WebAssets.Get(route);
             if (asset is not null)
             {

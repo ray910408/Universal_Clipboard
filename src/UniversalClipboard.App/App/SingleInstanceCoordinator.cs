@@ -131,7 +131,7 @@ public sealed class SingleInstanceCoordinator
             pipeName,
             ShowTrayMessage,
             SecondInstanceTimeout,
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
         return sendResult switch
         {
             SingleInstanceSendResult.Delivered => new SingleInstanceCoordinatorResult(
@@ -232,11 +232,11 @@ public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
                 pipeName,
                 PipeDirection.InOut,
                 PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-            await client.ConnectAsync(timeoutSource.Token);
+            await client.ConnectAsync(timeoutSource.Token).ConfigureAwait(false);
             await using var writer = new StreamWriter(client, leaveOpen: true) { AutoFlush = true };
             using var reader = new StreamReader(client, leaveOpen: true);
-            await writer.WriteLineAsync(message.AsMemory(), timeoutSource.Token);
-            var ack = await reader.ReadLineAsync(timeoutSource.Token);
+            await writer.WriteLineAsync(message.AsMemory(), timeoutSource.Token).ConfigureAwait(false);
+            var ack = await reader.ReadLineAsync(timeoutSource.Token).ConfigureAwait(false);
             return string.Equals(ack, AckOk, StringComparison.Ordinal)
                 ? SingleInstanceSendResult.Delivered
                 : SingleInstanceSendResult.Rejected;
@@ -276,7 +276,7 @@ public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
             _shutdown.Cancel();
             try
             {
-                await _worker;
+                await _worker.ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
             {
@@ -297,19 +297,19 @@ public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
                     PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 try
                 {
-                    await server.WaitForConnectionAsync(_shutdown.Token);
+                    await server.WaitForConnectionAsync(_shutdown.Token).ConfigureAwait(false);
                     using var reader = new StreamReader(server, leaveOpen: true);
                     await using var writer = new StreamWriter(server, leaveOpen: true)
                     {
                         AutoFlush = true,
                     };
-                    var message = await reader.ReadLineAsync(_shutdown.Token);
+                    var message = await reader.ReadLineAsync(_shutdown.Token).ConfigureAwait(false);
                     if (message is not null)
                     {
                         try
                         {
-                            await _onMessage(message, _shutdown.Token);
-                            await writer.WriteLineAsync(AckOk.AsMemory(), _shutdown.Token);
+                            await _onMessage(message, _shutdown.Token).ConfigureAwait(false);
+                            await writer.WriteLineAsync(AckOk.AsMemory(), _shutdown.Token).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
                         {
@@ -317,7 +317,7 @@ public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
                         }
                         catch (Exception)
                         {
-                            await writer.WriteLineAsync(AckError.AsMemory(), _shutdown.Token);
+                            await writer.WriteLineAsync(AckError.AsMemory(), _shutdown.Token).ConfigureAwait(false);
                         }
                     }
                 }

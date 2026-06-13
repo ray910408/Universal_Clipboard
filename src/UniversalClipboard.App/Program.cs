@@ -37,7 +37,13 @@ internal static class Program
                             SingleInstanceCoordinator.ShowTrayMessage,
                             StringComparison.Ordinal))
                         {
-                            scheduler.Post(() => context?.ShowTray());
+                            try
+                            {
+                                scheduler.Post(() => context?.ShowTray());
+                            }
+                            catch (InvalidOperationException)
+                            {
+                            }
                         }
 
                         return ValueTask.CompletedTask;
@@ -71,11 +77,12 @@ internal static class Program
                 authorization);
 
             trayWindow = new TrayWindow();
+            var sharing = new NetworkSharingController(network);
             context = new ClipboardApplicationContext(
                 new ClipboardApplicationServices(
                     trayWindow,
                     trayWindow,
-                    new NetworkSharingController(network),
+                    sharing,
                     new PairingCodeProvider(pairingCodes),
                     authorization,
                     clipboard,
@@ -86,7 +93,8 @@ internal static class Program
                         () => context,
                         cancellationToken)));
             monitor = StartSharingThenRegisterClipboard(
-                () => context.StartSharingAsync(),
+                sharing,
+                context.RefreshView,
                 () => new WindowsClipboardMonitor(
                     new WindowsClipboardReader(),
                     context,
@@ -135,11 +143,8 @@ internal static class Program
             return true;
         }
 
-        if (!string.IsNullOrWhiteSpace(result.Error))
-        {
-            reportError(result.Error);
-        }
-
+        // Secondary instances must never block on UI; the owner either handled
+        // ShowTray or this process exits without leaving a stuck dialog.
         return false;
     }
 
@@ -185,14 +190,25 @@ internal static class Program
             MessageBoxIcon.Error);
 
     internal static TMonitor StartSharingThenRegisterClipboard<TMonitor>(
-        Func<Task> startSharingAsync,
+        ISharingController sharing,
+        Action refreshView,
         Func<TMonitor> registerClipboardMonitor)
     {
-        ArgumentNullException.ThrowIfNull(startSharingAsync);
+        ArgumentNullException.ThrowIfNull(sharing);
+        ArgumentNullException.ThrowIfNull(refreshView);
         ArgumentNullException.ThrowIfNull(registerClipboardMonitor);
 
-        startSharingAsync().GetAwaiter().GetResult();
+        StartSharingForStartup(sharing, refreshView);
         return registerClipboardMonitor();
+    }
+
+    private static void StartSharingForStartup(
+        ISharingController sharing,
+        Action refreshView,
+        CancellationToken cancellationToken = default)
+    {
+        sharing.StartAsync(cancellationToken).ConfigureAwait(false).GetAwaiter().GetResult();
+        refreshView();
     }
 
     private sealed class WinFormsStaScheduler : IStaScheduler, IDisposable
@@ -204,6 +220,7 @@ internal static class Program
         public WinFormsStaScheduler()
         {
             _control.CreateControl();
+            _ = _control.Handle;
         }
 
         public bool CheckAccess() => Environment.CurrentManagedThreadId == _threadId;

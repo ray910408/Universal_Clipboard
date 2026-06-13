@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using FluentAssertions;
 using UniversalClipboard.App.Network;
@@ -131,6 +132,35 @@ public sealed class NetworkCoordinatorTests
     }
 
     [Fact]
+    public async Task Startup_does_not_capture_non_pumping_synchronization_context()
+    {
+        var fixture = new Fixture();
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5")];
+        fixture.Authorization.CompleteRemoveStaleAsynchronously = true;
+        var nonPumpingContext = new NonPumpingSynchronizationContext();
+        var originalContext = SynchronizationContext.Current;
+        Task<NetworkSharingState> start;
+
+        SynchronizationContext.SetSynchronizationContext(nonPumpingContext);
+        try
+        {
+            start = fixture.Coordinator.StartAsync();
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(originalContext);
+        }
+
+        var state = await start.WaitAsync(TimeSpan.FromSeconds(5));
+
+        state.Status.Should().Be(NetworkSharingStatus.Running);
+        fixture.Host.Starts.Should().ContainSingle(
+            endpoint => endpoint.Address.Equals(IPAddress.Parse("192.168.1.5")) &&
+                        endpoint.Port == 43127);
+        nonPumpingContext.Posts.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Revoke_persistence_failure_pauses_sharing_before_new_address_start()
     {
         var fixture = new Fixture();
@@ -243,6 +273,44 @@ public sealed class NetworkCoordinatorTests
 
         inspector.Inspect(43127).Status.Should().Be(FirewallRuleStatus.ExactRuleFound);
         inspector.Inspect(43128).Status.Should().Be(FirewallRuleStatus.Unknown);
+    }
+
+    [Fact]
+    public void Firewall_query_reflection_failure_reports_unknown()
+    {
+        var inspector = new WindowsFirewallInspector(
+            new ThrowingFirewallRuleQuery(
+                new TargetInvocationException(
+                    new ArgumentException("firewall reflection failed"))));
+
+        inspector.Inspect(43127).Status.Should().Be(FirewallRuleStatus.Unknown);
+    }
+
+    [Fact]
+    public async Task Startup_reaches_running_when_firewall_rule_query_does_not_return()
+    {
+        var query = new BlockingFirewallRuleQuery();
+        var fixture = new Fixture(
+            new WindowsFirewallInspector(query, TimeSpan.FromMilliseconds(10)));
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5")];
+
+        try
+        {
+            var start = fixture.Coordinator.StartAsync();
+            await query.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+            var state = await start.WaitAsync(TimeSpan.FromSeconds(5));
+
+            state.Status.Should().Be(NetworkSharingStatus.Running);
+            state.FirewallRuleStatus.Should().Be(FirewallRuleStatus.Unknown);
+            fixture.Host.Starts.Should().ContainSingle(
+                endpoint => endpoint.Address.Equals(IPAddress.Parse("192.168.1.5")) &&
+                            endpoint.Port == 43127);
+            query.Invocations.Should().Be(1);
+        }
+        finally
+        {
+            query.Release();
+        }
     }
 
     [Theory]
@@ -444,6 +512,54 @@ public sealed class NetworkCoordinatorTests
         profile.Should().Be(NetworkProfile.Unknown);
     }
 
+    [Fact]
+    public void Windows_network_list_manager_skips_bad_connections_without_losing_good_profiles()
+    {
+        var goodConnection = new FakeRawNetworkConnection(
+            "wifi-adapter",
+            WindowsNetworkProfileResolver.PrivateCategory);
+        var badConnection = new FakeRawNetworkConnection(
+            "bad-adapter",
+            WindowsNetworkProfileResolver.PublicCategory)
+        {
+            AdapterIdException = new TargetInvocationException(
+                new ArgumentException("bad connection")),
+        };
+        var bridge = new FakeWindowsNetworkListComBridge([badConnection, goodConnection]);
+        var resolver = new WindowsNetworkProfileResolver(new WindowsNetworkListManager(bridge));
+
+        var profile = resolver.Resolve(
+            new NetworkAdapterSnapshot(
+                "wifi-adapter",
+                "Wi-Fi",
+                NetworkInterfaceKind.WiFi,
+                NetworkOperationalStatus.Up,
+                [IPAddress.Parse("192.168.8.216")],
+                HasDefaultGateway: true));
+
+        profile.Should().Be(NetworkProfile.Private);
+        bridge.Released.Should().Contain(badConnection);
+        bridge.Released.Should().Contain(goodConnection.Network);
+        bridge.Released.Should().Contain(goodConnection);
+        bridge.Released.Should().Contain(bridge.ConnectionCollection);
+        bridge.Released.Should().Contain(bridge.Manager);
+    }
+
+    [Fact]
+    public void Windows_network_list_manager_returns_empty_when_connection_enumeration_reflection_fails()
+    {
+        var bridge = new FakeWindowsNetworkListComBridge([])
+        {
+            GetConnectionsException = new TargetInvocationException(
+                new ArgumentException("network list unavailable")),
+        };
+
+        var connections = new WindowsNetworkListManager(bridge).GetConnections();
+
+        connections.Should().BeEmpty();
+        bridge.Released.Should().Contain(bridge.Manager);
+    }
+
     private static NetworkInterfaceState Iface(
         string id,
         string address,
@@ -475,7 +591,7 @@ public sealed class NetworkCoordinatorTests
 
         public NetworkCoordinator Coordinator { get; }
 
-        public Fixture()
+        public Fixture(IFirewallInspector? firewall = null)
         {
             Environment = new FakeNetworkEnvironment();
             Host = new FakeHostController(Events);
@@ -483,7 +599,7 @@ public sealed class NetworkCoordinatorTests
             Coordinator = new NetworkCoordinator(
                 Environment,
                 Ports,
-                Firewall,
+                firewall ?? Firewall,
                 Host,
                 Pairing,
                 Authorization);
@@ -560,6 +676,43 @@ public sealed class NetworkCoordinatorTests
         public IReadOnlyList<FirewallRuleSnapshot> Rules { get; set; } = [];
 
         public IReadOnlyList<FirewallRuleSnapshot> GetRules() => Rules;
+    }
+
+    private sealed class ThrowingFirewallRuleQuery(Exception exception) : IFirewallRuleQuery
+    {
+        public IReadOnlyList<FirewallRuleSnapshot> GetRules() => throw exception;
+    }
+
+    private sealed class BlockingFirewallRuleQuery : IFirewallRuleQuery
+    {
+        private readonly ManualResetEventSlim _release = new();
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _invocations;
+
+        public Task Entered => _entered.Task;
+
+        public int Invocations => Volatile.Read(ref _invocations);
+
+        public IReadOnlyList<FirewallRuleSnapshot> GetRules()
+        {
+            Interlocked.Increment(ref _invocations);
+            _entered.TrySetResult();
+            _release.Wait();
+            return [];
+        }
+
+        public void Release() => _release.Set();
+    }
+
+    private sealed class NonPumpingSynchronizationContext : SynchronizationContext
+    {
+        private int _posts;
+
+        public int Posts => Volatile.Read(ref _posts);
+
+        public override void Post(SendOrPostCallback d, object? state) =>
+            Interlocked.Increment(ref _posts);
     }
 
     private sealed class FakeTcpPortInspector : ITcpPortInspector
@@ -642,6 +795,68 @@ public sealed class NetworkCoordinatorTests
         public IReadOnlyList<ComNetworkConnectionSnapshot> GetConnections() => connections;
     }
 
+    private sealed class FakeWindowsNetworkListComBridge(
+        IReadOnlyList<FakeRawNetworkConnection> connections) : IWindowsNetworkListComBridge
+    {
+        public object Manager { get; } = new();
+
+        public FakeRawNetworkConnectionCollection ConnectionCollection { get; } = new(connections);
+
+        public List<object> Released { get; } = [];
+
+        public Exception? GetConnectionsException { get; init; }
+
+        public object? CreateManager(Guid clsid) => Manager;
+
+        public object? GetNetworkConnections(object manager)
+        {
+            if (GetConnectionsException is not null)
+            {
+                throw GetConnectionsException;
+            }
+
+            return ConnectionCollection;
+        }
+
+        public object? GetAdapterId(object connection)
+        {
+            var typed = (FakeRawNetworkConnection)connection;
+            if (typed.AdapterIdException is not null)
+            {
+                throw typed.AdapterIdException;
+            }
+
+            return typed.AdapterId;
+        }
+
+        public object? GetNetwork(object connection) =>
+            ((FakeRawNetworkConnection)connection).Network;
+
+        public object? GetCategory(object network) =>
+            ((FakeRawNetwork)network).Category;
+
+        public bool IsComObject(object target) => true;
+
+        public void Release(object target) => Released.Add(target);
+    }
+
+    private sealed class FakeRawNetworkConnectionCollection(
+        IReadOnlyList<FakeRawNetworkConnection> connections) : System.Collections.IEnumerable
+    {
+        public System.Collections.IEnumerator GetEnumerator() => connections.GetEnumerator();
+    }
+
+    private sealed record FakeRawNetworkConnection(
+        string AdapterId,
+        int Category)
+    {
+        public FakeRawNetwork Network { get; } = new(Category);
+
+        public Exception? AdapterIdException { get; init; }
+    }
+
+    private sealed record FakeRawNetwork(int Category);
+
     private sealed class FakeHostController(ConcurrentQueue<string> events) : ILocalWebHostController
     {
         private readonly TaskCompletionSource _startEntered =
@@ -704,6 +919,8 @@ public sealed class NetworkCoordinatorTests
     {
         public bool FailRevokeAll { get; set; }
 
+        public bool CompleteRemoveStaleAsynchronously { get; set; }
+
         public ImmutableArray<AuthorizationMetadata> List() => [];
 
         public ValueTask<AuthorizationMutationResult> RevokeAsync(
@@ -723,8 +940,20 @@ public sealed class NetworkCoordinatorTests
             IReadOnlyCollection<IPAddress> activeHostIpv4Addresses,
             CancellationToken cancellationToken = default)
         {
-            events.Enqueue(
-                "auth:remove-stale:" + string.Join(",", activeHostIpv4Addresses));
+            var eventText = "auth:remove-stale:" + string.Join(",", activeHostIpv4Addresses);
+            if (CompleteRemoveStaleAsynchronously)
+            {
+                return new ValueTask<AuthorizationMutationResult>(
+                    Task.Run(
+                        () =>
+                        {
+                            events.Enqueue(eventText);
+                            return NetworkTestAuthorizationResult.Create(succeeded: true);
+                        },
+                        cancellationToken));
+            }
+
+            events.Enqueue(eventText);
             return ValueTask.FromResult(NetworkTestAuthorizationResult.Create(succeeded: true));
         }
     }

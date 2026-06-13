@@ -127,22 +127,117 @@ public sealed record FirewallRuleSnapshot(
 
 public sealed record FirewallInspectionResult(FirewallRuleStatus Status);
 
-public sealed class WindowsFirewallInspector(IFirewallRuleQuery ruleQuery) : IFirewallInspector
+public sealed class WindowsFirewallInspector : IFirewallInspector
 {
     public const string ExpectedRuleName = "Universal Clipboard LAN";
+    private static readonly TimeSpan DefaultInspectionTimeout = TimeSpan.FromMilliseconds(250);
+    private readonly IFirewallRuleQuery _ruleQuery;
+    private readonly TimeSpan _inspectionTimeout;
+    private readonly object _inspectionGate = new();
+    private Task<FirewallInspectionResult>? _activeInspection;
+    private int _activeInspectionPort;
+
+    public WindowsFirewallInspector(IFirewallRuleQuery ruleQuery)
+        : this(ruleQuery, DefaultInspectionTimeout)
+    {
+    }
+
+    internal WindowsFirewallInspector(IFirewallRuleQuery ruleQuery, TimeSpan inspectionTimeout)
+    {
+        _ruleQuery = ruleQuery;
+        _inspectionTimeout = inspectionTimeout > TimeSpan.Zero
+            ? inspectionTimeout
+            : throw new ArgumentOutOfRangeException(nameof(inspectionTimeout));
+    }
 
     public FirewallInspectionResult Inspect(int port)
     {
-        var hasExactRule = ruleQuery.GetRules().Any(rule =>
-            string.Equals(rule.Name, ExpectedRuleName, StringComparison.Ordinal) &&
-            rule.IsEnabled &&
-            rule.Action == FirewallRuleAction.Allow &&
-            rule.Protocol == FirewallRuleProtocol.Tcp &&
-            rule.LocalPort == port &&
-            rule.Profile == FirewallRuleProfile.Private &&
-            rule.RemoteAddressScope == FirewallRemoteAddressScope.LocalSubnet);
-        return new FirewallInspectionResult(
-            hasExactRule ? FirewallRuleStatus.ExactRuleFound : FirewallRuleStatus.Unknown);
+        var inspection = TryStartInspection(port);
+        if (inspection is null || !inspection.Wait(_inspectionTimeout))
+        {
+            return new FirewallInspectionResult(FirewallRuleStatus.Unknown);
+        }
+
+        var result = inspection.GetAwaiter().GetResult();
+        ClearCompletedInspection(inspection);
+        return result;
+    }
+
+    private Task<FirewallInspectionResult>? TryStartInspection(int port)
+    {
+        lock (_inspectionGate)
+        {
+            if (_activeInspection is { IsCompleted: false })
+            {
+                // A hung COM enumeration should consume at most one background worker per inspector.
+                return null;
+            }
+
+            if (_activeInspection is { IsCompleted: true } completed)
+            {
+                _activeInspection = null;
+                if (_activeInspectionPort == port)
+                {
+                    return completed;
+                }
+            }
+
+            _activeInspectionPort = port;
+            _activeInspection = Task.Run(() => InspectCore(port));
+            return _activeInspection;
+        }
+    }
+
+    private void ClearCompletedInspection(Task<FirewallInspectionResult> inspection)
+    {
+        lock (_inspectionGate)
+        {
+            if (ReferenceEquals(_activeInspection, inspection) && inspection.IsCompleted)
+            {
+                _activeInspection = null;
+            }
+        }
+    }
+
+    private FirewallInspectionResult InspectCore(int port)
+    {
+        try
+        {
+            var hasExactRule = _ruleQuery.GetRules().Any(rule =>
+                string.Equals(rule.Name, ExpectedRuleName, StringComparison.Ordinal) &&
+                rule.IsEnabled &&
+                rule.Action == FirewallRuleAction.Allow &&
+                rule.Protocol == FirewallRuleProtocol.Tcp &&
+                rule.LocalPort == port &&
+                rule.Profile == FirewallRuleProfile.Private &&
+                rule.RemoteAddressScope == FirewallRemoteAddressScope.LocalSubnet);
+            return new FirewallInspectionResult(
+                hasExactRule ? FirewallRuleStatus.ExactRuleFound : FirewallRuleStatus.Unknown);
+        }
+        catch (COMException)
+        {
+            return new FirewallInspectionResult(FirewallRuleStatus.Unknown);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return new FirewallInspectionResult(FirewallRuleStatus.Unknown);
+        }
+        catch (TargetInvocationException)
+        {
+            return new FirewallInspectionResult(FirewallRuleStatus.Unknown);
+        }
+        catch (ArgumentException)
+        {
+            return new FirewallInspectionResult(FirewallRuleStatus.Unknown);
+        }
+        catch (MissingMethodException)
+        {
+            return new FirewallInspectionResult(FirewallRuleStatus.Unknown);
+        }
+        catch (InvalidOperationException)
+        {
+            return new FirewallInspectionResult(FirewallRuleStatus.Unknown);
+        }
     }
 }
 
@@ -451,7 +546,7 @@ public sealed class NetworkCoordinator
     {
         Volatile.Write(ref _shutdown, true);
         Interlocked.Increment(ref _lifecycleVersion);
-        await StopRunningHostAsync(cancellationToken);
+        await StopRunningHostAsync(cancellationToken).ConfigureAwait(false);
         var state = NetworkSharingState.Initial;
         Publish(state);
         return state;
@@ -488,13 +583,13 @@ public sealed class NetworkCoordinator
             NetworkSharingState state;
             if (Volatile.Read(ref _shutdown))
             {
-                await StopRunningHostAsync(cancellationToken);
+                await StopRunningHostAsync(cancellationToken).ConfigureAwait(false);
                 state = NetworkSharingState.Initial;
                 Publish(state);
             }
             else
             {
-                state = await EvaluateAsync(cancellationToken);
+                state = await EvaluateAsync(cancellationToken).ConfigureAwait(false);
             }
 
             lock (_coalesceGate)
@@ -513,15 +608,15 @@ public sealed class NetworkCoordinator
     private async Task<NetworkSharingState> EvaluateAsync(CancellationToken cancellationToken)
     {
         var lifecycleVersion = Volatile.Read(ref _lifecycleVersion);
-        var interfaces = await _environment.GetInterfacesAsync(cancellationToken);
+        var interfaces = await _environment.GetInterfacesAsync(cancellationToken).ConfigureAwait(false);
         if (!IsEvaluationCurrent(lifecycleVersion))
         {
-            return await StopStaleEvaluationAsync(cancellationToken);
+            return await StopStaleEvaluationAsync(cancellationToken).ConfigureAwait(false);
         }
 
         if (interfaces.Any(IsPublicProfileCandidate))
         {
-            await StopRunningHostAndInvalidateAsync(cancellationToken);
+            await StopRunningHostAndInvalidateAsync(cancellationToken).ConfigureAwait(false);
             return Publish(new NetworkSharingState(
                 NetworkSharingStatus.PublicProfileBlocked,
                 null,
@@ -537,7 +632,7 @@ public sealed class NetworkCoordinator
         var selection = NetworkInterfaceSelector.Select(interfaces, _selectedInterfaceId);
         if (selection.Status == NetworkSelectionStatus.NoEligibleInterface)
         {
-            await StopRunningHostAndInvalidateAsync(cancellationToken);
+            await StopRunningHostAndInvalidateAsync(cancellationToken).ConfigureAwait(false);
             return Publish(new NetworkSharingState(
                 NetworkSharingStatus.NoEligibleInterface,
                 null,
@@ -552,7 +647,7 @@ public sealed class NetworkCoordinator
 
         if (selection.Status == NetworkSelectionStatus.SelectionRequired)
         {
-            await StopRunningHostAndInvalidateAsync(cancellationToken);
+            await StopRunningHostAndInvalidateAsync(cancellationToken).ConfigureAwait(false);
             return Publish(new NetworkSharingState(
                 NetworkSharingStatus.SelectionRequired,
                 null,
@@ -577,7 +672,7 @@ public sealed class NetworkCoordinator
         var probe = _portProbe.Check(address, LocalWebHost.Port);
         if (!probe.IsAvailable)
         {
-            await StopRunningHostAsync(cancellationToken);
+            await StopRunningHostAsync(cancellationToken).ConfigureAwait(false);
             return Publish(new NetworkSharingState(
                 NetworkSharingStatus.PortConflict,
                 selected.Id,
@@ -593,8 +688,8 @@ public sealed class NetworkCoordinator
         var hadRunningEndpoint = _runningEndpoint is not null;
         if (hadRunningEndpoint)
         {
-            await StopRunningHostAsync(cancellationToken);
-            var revoke = await _authorization.RevokeAllAsync(cancellationToken);
+            await StopRunningHostAsync(cancellationToken).ConfigureAwait(false);
+            var revoke = await _authorization.RevokeAllAsync(cancellationToken).ConfigureAwait(false);
             if (!revoke.Succeeded)
             {
                 return Publish(AuthPersistenceFailedState(selected, address));
@@ -603,10 +698,10 @@ public sealed class NetworkCoordinator
 
         var staleRemoval = await _authorization.RemoveStaleBindingsAsync(
             [address],
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
         if (!IsEvaluationCurrent(lifecycleVersion))
         {
-            return await StopStaleEvaluationAsync(cancellationToken);
+            return await StopStaleEvaluationAsync(cancellationToken).ConfigureAwait(false);
         }
 
         if (!staleRemoval.Succeeded)
@@ -616,7 +711,7 @@ public sealed class NetworkCoordinator
 
         if (!IsEvaluationCurrent(lifecycleVersion))
         {
-            return await StopStaleEvaluationAsync(cancellationToken);
+            return await StopStaleEvaluationAsync(cancellationToken).ConfigureAwait(false);
         }
 
         Publish(new NetworkSharingState(
@@ -631,7 +726,7 @@ public sealed class NetworkCoordinator
             null));
         try
         {
-            await _host.StartAsync(endpoint, cancellationToken);
+            await _host.StartAsync(endpoint, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -641,7 +736,7 @@ public sealed class NetworkCoordinator
         {
             if (!IsEvaluationCurrent(lifecycleVersion))
             {
-                return await StopStaleEvaluationAsync(cancellationToken);
+                return await StopStaleEvaluationAsync(cancellationToken).ConfigureAwait(false);
             }
 
             _runningEndpoint = null;
@@ -660,7 +755,7 @@ public sealed class NetworkCoordinator
         if (!IsEvaluationCurrent(lifecycleVersion))
         {
             _runningEndpoint = endpoint;
-            return await StopStaleEvaluationAsync(cancellationToken);
+            return await StopStaleEvaluationAsync(cancellationToken).ConfigureAwait(false);
         }
 
         _runningEndpoint = endpoint;
@@ -674,7 +769,7 @@ public sealed class NetworkCoordinator
     private async ValueTask<NetworkSharingState> StopStaleEvaluationAsync(
         CancellationToken cancellationToken)
     {
-        await StopRunningHostAsync(cancellationToken);
+        await StopRunningHostAsync(cancellationToken).ConfigureAwait(false);
         return Volatile.Read(ref _shutdown)
             ? Publish(NetworkSharingState.Initial)
             : CurrentState;
@@ -683,10 +778,11 @@ public sealed class NetworkCoordinator
     private async ValueTask StopRunningHostAndInvalidateAsync(CancellationToken cancellationToken)
     {
         var hadRunningEndpoint = _runningEndpoint is not null;
-        await StopRunningHostAsync(cancellationToken);
+        await StopRunningHostAsync(cancellationToken).ConfigureAwait(false);
         if (hadRunningEndpoint)
         {
-            await _pairingCodeInvalidator.InvalidateActiveCodesAsync(cancellationToken);
+            await _pairingCodeInvalidator.InvalidateActiveCodesAsync(cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 
@@ -698,7 +794,7 @@ public sealed class NetworkCoordinator
         }
 
         _runningEndpoint = null;
-        await _host.StopAsync(cancellationToken);
+        await _host.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private NetworkSharingState RunningState(

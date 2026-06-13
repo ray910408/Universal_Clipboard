@@ -108,23 +108,69 @@ public sealed class ApplicationCompositionTests
     }
 
     [Fact]
-    public void Startup_registers_clipboard_listener_after_sharing_has_started()
+    public void Startup_registers_clipboard_listener_after_async_sharing_has_started_without_pumped_context()
     {
-        var events = new List<string>();
+        var events = new ConcurrentQueue<string>();
+        var synchronizationContext = new NonPumpingSynchronizationContext();
+        Exception? exception = null;
+        object? monitor = null;
+        RecordingTrayWindow? window = null;
+        var callerThreadId = -1;
+        var refreshThreadId = -1;
+        var registerThreadId = -1;
 
-        Program.StartSharingThenRegisterClipboard(
-            () =>
+        var thread = new Thread(() =>
+        {
+            try
             {
-                events.Add("sharing:start");
-                return Task.CompletedTask;
-            },
-            () =>
-            {
-                events.Add("clipboard:register");
-                return new object();
-            });
+                SynchronizationContext.SetSynchronizationContext(synchronizationContext);
+                callerThreadId = Environment.CurrentManagedThreadId;
+                var fixture = new Fixture();
+                fixture.Sharing.State = RunningState(
+                    "http://192.168.1.5:43127/",
+                    FirewallRuleStatus.Unknown);
+                fixture.Sharing.CompleteStartAsynchronously = true;
+                fixture.Sharing.StartEntered = () => events.Enqueue("sharing:start");
+                fixture.Sharing.StartCompleted = () => events.Enqueue("sharing:started");
 
-        events.Should().Equal("sharing:start", "clipboard:register");
+                monitor = Program.StartSharingThenRegisterClipboard(
+                    fixture.Sharing,
+                    () =>
+                    {
+                        refreshThreadId = Environment.CurrentManagedThreadId;
+                        events.Enqueue("refresh");
+                        fixture.Context.RefreshView();
+                    },
+                    () =>
+                    {
+                        registerThreadId = Environment.CurrentManagedThreadId;
+                        events.Enqueue("clipboard:register");
+                        return new object();
+                    });
+                window = fixture.Window;
+            }
+            catch (Exception caught)
+            {
+                exception = caught;
+            }
+        });
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        thread.Join(TimeSpan.FromSeconds(5)).Should().BeTrue(
+            "startup sharing must not wait for a pre-message-loop WinForms context to pump");
+        exception.Should().BeNull();
+        monitor.Should().NotBeNull();
+        synchronizationContext.PostCount.Should().Be(0);
+        events.Should().Equal(
+            "sharing:start",
+            "sharing:started",
+            "refresh",
+            "clipboard:register");
+        refreshThreadId.Should().Be(callerThreadId);
+        registerThreadId.Should().Be(callerThreadId);
+        window!.State.ServiceStatus.Should().Be("Running");
     }
 
     [Fact]
@@ -148,7 +194,7 @@ public sealed class ApplicationCompositionTests
     }
 
     [Fact]
-    public void Secondary_pipe_failure_is_reported_to_user()
+    public void Secondary_pipe_failure_exits_without_blocking_error_reporter()
     {
         var reports = new List<string>();
         var result = new SingleInstanceCoordinatorResult(
@@ -162,8 +208,7 @@ public sealed class ApplicationCompositionTests
             reports.Add);
 
         shouldContinue.Should().BeFalse();
-        reports.Should().ContainSingle()
-            .Which.Should().Contain("did not accept ShowTray");
+        reports.Should().BeEmpty();
     }
 
     [Fact]
@@ -700,6 +745,12 @@ public sealed class ApplicationCompositionTests
 
         public bool ThrowStart { get; set; }
 
+        public bool CompleteStartAsynchronously { get; set; }
+
+        public Action? StartEntered { get; set; }
+
+        public Action? StartCompleted { get; set; }
+
         public TaskCompletionSource ShutdownEntered { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -707,12 +758,27 @@ public sealed class ApplicationCompositionTests
 
         public Task<NetworkSharingState> StartAsync(CancellationToken cancellationToken = default)
         {
+            StartEntered?.Invoke();
             if (ThrowStart)
             {
                 throw new InvalidOperationException("boom");
             }
 
+            if (CompleteStartAsynchronously)
+            {
+                return CompleteStartAsync(cancellationToken);
+            }
+
+            StartCompleted?.Invoke();
             return Task.FromResult(State);
+        }
+
+        private async Task<NetworkSharingState> CompleteStartAsync(
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+            StartCompleted?.Invoke();
+            return State;
         }
 
         public async Task<NetworkSharingState> ShutdownAsync(CancellationToken cancellationToken = default)
@@ -856,6 +922,23 @@ public sealed class ApplicationCompositionTests
     private sealed class DisposableProbe(Action onDispose) : IDisposable
     {
         public void Dispose() => onDispose();
+    }
+
+    private sealed class NonPumpingSynchronizationContext : SynchronizationContext
+    {
+        public int PostCount { get; private set; }
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            ArgumentNullException.ThrowIfNull(d);
+            PostCount++;
+        }
+
+        public override void Send(SendOrPostCallback d, object? state)
+        {
+            ArgumentNullException.ThrowIfNull(d);
+            PostCount++;
+        }
     }
 
     private sealed class RecordingLocalWebHostInstance(LocalWebHostStopResult stopResult)

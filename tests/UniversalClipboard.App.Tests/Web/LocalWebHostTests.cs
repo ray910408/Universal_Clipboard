@@ -32,6 +32,18 @@ public sealed class LocalWebHostTests
         (await response.Content.ReadAsStringAsync()).Should().NotBeEmpty();
     }
 
+    [Fact]
+    public async Task Favicon_request_returns_no_content_with_security_and_no_cache_headers()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+
+        var response = await fixture.Client.GetAsync("/favicon.ico");
+
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await response.Content.ReadAsByteArrayAsync()).Should().BeEmpty();
+        AssertSecurityHeaders(response);
+    }
+
     [Theory]
     [InlineData("127.0.0.2:43127")]
     [InlineData("127.0.0.1:9999")]

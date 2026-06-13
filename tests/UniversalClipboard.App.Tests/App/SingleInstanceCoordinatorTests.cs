@@ -46,6 +46,42 @@ public sealed class SingleInstanceCoordinatorTests
     }
 
     [Fact]
+    public void Second_launch_does_not_capture_pre_message_loop_synchronization_context()
+    {
+        var mutexes = new FakeSingleInstanceMutexFactory { InitiallyOwned = true };
+        var transport = new FakeSingleInstanceTransport
+        {
+            CompleteSendAsynchronously = true,
+        };
+        Exception? exception = null;
+        SingleInstanceCoordinatorResult? result = null;
+        var context = new NonPumpingSynchronizationContext();
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(context);
+                result = SingleInstanceCoordinator.TryStartAsync(
+                    TestOptions(mutexes, transport),
+                    CancellationToken.None).GetAwaiter().GetResult();
+            }
+            catch (Exception caught)
+            {
+                exception = caught;
+            }
+        });
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        thread.Join(TimeSpan.FromSeconds(5)).Should().BeTrue(
+            "secondary startup must exit before the WinForms message loop is pumping");
+        exception.Should().BeNull();
+        result!.Role.Should().Be(SingleInstanceRole.SecondaryNotified);
+        context.PostCount.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Second_launch_reports_rejected_when_owner_handler_fails()
     {
         var mutexes = new FakeSingleInstanceMutexFactory { InitiallyOwned = true };
@@ -141,6 +177,39 @@ public sealed class SingleInstanceCoordinatorTests
         handled.Should().Equal("fail", "ok");
     }
 
+    [Fact]
+    public void Windows_mutex_factory_enforces_same_user_single_owner()
+    {
+        var factory = new WindowsSingleInstanceMutexFactory();
+        var name = @"Local\UniversalClipboard.test." + Guid.NewGuid().ToString("N");
+        using var acquired = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        Exception? threadException = null;
+        var owner = new Thread(() =>
+        {
+            try
+            {
+                using var first = factory.Create(name);
+                first.TryAcquire().Should().BeTrue();
+                acquired.Set();
+                release.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            }
+            catch (Exception exception)
+            {
+                threadException = exception;
+            }
+        });
+        owner.Start();
+        acquired.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+
+        using var second = factory.Create(name);
+        second.TryAcquire().Should().BeFalse();
+
+        release.Set();
+        owner.Join(TimeSpan.FromSeconds(5)).Should().BeTrue();
+        threadException.Should().BeNull();
+    }
+
     private static SingleInstanceCoordinatorOptions TestOptions(
         FakeSingleInstanceMutexFactory mutexes,
         FakeSingleInstanceTransport transport,
@@ -200,6 +269,8 @@ public sealed class SingleInstanceCoordinatorTests
         public SingleInstanceSendResult SendResult { get; set; } =
             SingleInstanceSendResult.Delivered;
 
+        public bool CompleteSendAsynchronously { get; set; }
+
         public List<SingleInstancePipeRegistration> StartedServers { get; } = [];
 
         public List<string> SentMessages { get; } = [];
@@ -217,19 +288,24 @@ public sealed class SingleInstanceCoordinatorTests
             return new FakeServer();
         }
 
-        public ValueTask<SingleInstanceSendResult> TrySendAsync(
+        public async ValueTask<SingleInstanceSendResult> TrySendAsync(
             string pipeName,
             string message,
             TimeSpan timeout,
             CancellationToken cancellationToken)
         {
             LastTimeout = timeout;
+            if (CompleteSendAsynchronously)
+            {
+                await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+            }
+
             if (SendResult == SingleInstanceSendResult.Delivered)
             {
                 SentMessages.Add(message);
             }
 
-            return ValueTask.FromResult(SendResult);
+            return SendResult;
         }
 
         public async ValueTask DeliverToOwnerAsync(string message) =>
@@ -238,6 +314,23 @@ public sealed class SingleInstanceCoordinatorTests
         private sealed class FakeServer : ISingleInstancePipeServer
         {
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class NonPumpingSynchronizationContext : SynchronizationContext
+    {
+        public int PostCount { get; private set; }
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            ArgumentNullException.ThrowIfNull(d);
+            PostCount++;
+        }
+
+        public override void Send(SendOrPostCallback d, object? state)
+        {
+            ArgumentNullException.ThrowIfNull(d);
+            PostCount++;
         }
     }
 }
