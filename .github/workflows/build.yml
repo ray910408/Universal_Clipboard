@@ -22,7 +22,7 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Restore
-        run: dotnet restore UniversalClipboard.slnx --locked-mode
+        run: dotnet restore UniversalClipboard.slnx -r win-x64 --locked-mode
 
       - name: Restore publish runtime
         run: dotnet restore src/UniversalClipboard.App/UniversalClipboard.App.csproj -r win-x64 --locked-mode
