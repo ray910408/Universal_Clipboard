@@ -69,6 +69,7 @@ function Test-RestoreRequired {
     $assetPaths = @(
         $projects | ForEach-Object {
             Join-Path $_.DirectoryName 'obj/project.assets.json'
+            Join-Path $_.DirectoryName 'packages.lock.json'
         }
     )
 
@@ -82,11 +83,6 @@ function Test-RestoreRequired {
         Join-Path $RepoRoot 'Directory.Packages.props'
     )
     $restoreInputs += $projects.FullName
-    $restoreInputs += @(
-        $projects | ForEach-Object {
-            Join-Path $_.DirectoryName 'packages.lock.json'
-        }
-    )
 
     $existingInputs = @(
         $restoreInputs |
