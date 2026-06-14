@@ -203,7 +203,7 @@ try {
     & $dotnet run --project $appProject -c $Configuration --no-build
     $exitCode = [uint32]$LASTEXITCODE
     if ($exitCode -ne 0 -and $exitCode -ne 0xC000013A) {
-        throw "dotnet run failed with exit code $LASTEXITCODE."
+        throw ("dotnet run failed with exit code 0x{0:X8} ({1})." -f $exitCode, $LASTEXITCODE)
     }
 } finally {
     Pop-Location
