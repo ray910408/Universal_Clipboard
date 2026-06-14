@@ -198,7 +198,8 @@ try {
     Write-Info 'Keep this PowerShell window open while running from source. Press Ctrl+C to stop dotnet run.'
 
     & $dotnet run --project $appProject -c $Configuration --no-build
-    if ($LASTEXITCODE -notin @(0, 3221225786)) {
+    $exitCode = [uint32]$LASTEXITCODE
+    if ($exitCode -ne 0 -and $exitCode -ne 0xC000013A) {
         throw "dotnet run failed with exit code $LASTEXITCODE."
     }
 } finally {
