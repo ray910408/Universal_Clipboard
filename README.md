@@ -19,6 +19,7 @@ From a Windows clone of this repository:
 ```powershell
 git clone https://github.com/ray910408/Universal_Clipboard.git
 cd Universal_Clipboard
+.\scripts\bootstrap.ps1
 .\scripts\run.ps1
 ```
 
