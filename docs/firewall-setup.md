@@ -42,6 +42,14 @@ Expected values:
 
 ## Remove
 
+Run this command in **Administrator PowerShell**:
+
+```powershell
+.\scripts\remove-firewall.ps1
+```
+
+Equivalent manual command:
+
 ```powershell
 Remove-NetFirewallRule -DisplayName "Universal Clipboard LAN"
 ```
