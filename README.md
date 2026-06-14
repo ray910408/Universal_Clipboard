@@ -12,6 +12,26 @@ This MVP is intentionally local-first:
 - no clipboard payloads written by the app to disk;
 - latest three approved text items only.
 
+## Quick Start
+
+From a Windows clone of this repository:
+
+```powershell
+.\scripts\run.ps1
+```
+
+The script restores packages, builds the solution, and starts the Windows tray app.
+Windows management stays in the **Tray UI**. Use the tray window to choose the LAN
+interface, generate a QR code, and view the iPhone URL. iPhone Safari uses the tray
+URL, for example `https://<LAN-IP>:43127/`.
+
+Firewall changes are opt-in. To create the documented Private + LocalSubnet inbound
+rule for TCP `43127`, run from **Administrator PowerShell**:
+
+```powershell
+.\scripts\run.ps1 -ConfigureFirewall
+```
+
 ## Requirements
 
 - Windows PC on a trusted **Private** Ethernet or Wi-Fi network.
