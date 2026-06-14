@@ -22,7 +22,10 @@ cd Universal_Clipboard
 .\scripts\run.ps1
 ```
 
-The script restores packages, builds the solution, and starts the Windows tray app.
+The script first runs `scripts\bootstrap.ps1`, which checks for a usable .NET 10 SDK
+and installs a repository-local SDK under `.dotnet\` only when one is missing. It
+then restores packages, builds the solution, and starts the Windows tray app. To
+prepare prerequisites without starting the tray app, run `.\scripts\bootstrap.ps1`.
 Windows management stays in the **Tray UI**. Use the tray window to choose the LAN
 interface, generate a QR code, and view the iPhone URL. iPhone Safari uses the tray
 URL, for example `https://<LAN-IP>:43127/`.

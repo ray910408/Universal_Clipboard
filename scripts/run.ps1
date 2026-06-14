@@ -51,6 +51,11 @@ if (-not (Test-Path $appProject)) {
     throw "App project not found: $appProject"
 }
 
+$bootstrapScript = Join-Path $PSScriptRoot 'bootstrap.ps1'
+if (Test-Path $bootstrapScript) {
+    & $bootstrapScript
+}
+
 if (Test-Path $localDotnet) {
     $dotnet = $localDotnet
 } else {
