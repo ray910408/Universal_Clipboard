@@ -36,6 +36,11 @@ rule for TCP `43127`, run from **Administrator PowerShell**:
 ```powershell
 .\scripts\run.ps1 -ConfigureFirewall
 ```
+delete
+
+```powershell
+scripts/remove-firewall.ps1
+```
 
 ## Requirements
 
