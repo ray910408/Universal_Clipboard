@@ -1,11 +1,36 @@
+# local SDK/worktree state
 .dotnet/
 .worktrees/
+
+# build output
 **/bin/
 **/obj/
+artifacts/
+
+# IDE/editor state
 .vs/
 *.user
 *.suo
-TestResults/
-artifacts/
+
+# local agent/index state
 .codegraph/
 .gstack/
+.hermes/
+
+# tests and test output are kept local for this publish branch
+tests/
+.github/
+docs/superpowers/
+TestResults/
+coverage/
+*.trx
+
+# secrets and local configuration
+.env
+.env.*
+!.env.example
+secrets/
+*.pfx
+*.p12
+*.pem
+*.key

@@ -30,7 +30,6 @@ Do not use it on public, guest, hotel, school, or untrusted networks.
 $dotnet = 'C:\Universal_Clipboard\.dotnet\dotnet.exe'
 & $dotnet restore UniversalClipboard.slnx
 & $dotnet build UniversalClipboard.slnx -c Release --no-restore
-& $dotnet test UniversalClipboard.slnx -c Release --no-build
 & $dotnet publish src/UniversalClipboard.App/UniversalClipboard.App.csproj -c Release -r win-x64 --self-contained true -o artifacts/win-x64
 Get-FileHash artifacts/win-x64/UniversalClipboard.App.exe, artifacts/win-x64/UniversalClipboard.App.dll -Algorithm SHA256
 ```

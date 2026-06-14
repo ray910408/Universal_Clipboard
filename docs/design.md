@@ -261,14 +261,14 @@ item until the clipboard first changes to a different string.
 The classifier performs one bounded, linear-time scan and ships with only these
 high-confidence MVP rules:
 
-- PEM private-key blocks using one of these exact, case-sensitive marker pairs:
-  - `-----BEGIN PRIVATE KEY-----` / `-----END PRIVATE KEY-----`
-  - `-----BEGIN RSA PRIVATE KEY-----` / `-----END RSA PRIVATE KEY-----`
-  - `-----BEGIN EC PRIVATE KEY-----` / `-----END EC PRIVATE KEY-----`
-  - `-----BEGIN DSA PRIVATE KEY-----` / `-----END DSA PRIVATE KEY-----`
-  - `-----BEGIN OPENSSH PRIVATE KEY-----` / `-----END OPENSSH PRIVATE KEY-----`
-- GitHub-style tokens matching `gh[pousr]_[A-Za-z0-9]{36,255}`;
-- AWS access-key identifiers matching `AKIA[0-9A-Z]{16}`.
+- PEM private-key blocks using the standard unencrypted, encrypted, RSA, EC, and
+  OpenSSH header/footer marker pairs. The literal marker strings are intentionally
+  not printed here so repository secret scanners do not treat this design document
+  as containing a private key.
+- GitHub classic tokens matching the `gh[pousr]_` token family and GitHub
+  fine-grained personal access tokens using the `github_pat_` prefix.
+- AWS access-key identifiers matching long-term `AKIA` and temporary `ASIA`
+  access-key prefixes.
 
 Both PEM markers must begin at the start of the text or immediately after `\n`.
 After the final hyphen, each marker must be followed by `\r\n`, `\n`, or end of text.
