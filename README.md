@@ -107,9 +107,3 @@ Important limits:
 - **Copy button does not confirm Copied**: use the visible selected text and
   long-press Copy. Manual copy is the reliable Safari fallback when one-tap
   Clipboard API access is unavailable.
-
-## Manual Release Gates
-
-Before a public release, complete the real-device checklist in
-[docs/manual-transfer-fixtures.md](docs/manual-transfer-fixtures.md), including five
-actual Windows-to-iPhone transfers. Do not invent those observations.
