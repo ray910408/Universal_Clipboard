@@ -167,22 +167,22 @@ public sealed partial class TrayWindow
         pendingListBox.Size = new Size(548, 84);
 
         startButton.Text = "Start";
-        startButton.Location = new Point(12, 646);
+        startButton.Location = new Point(12, 672);
         startButton.Size = new Size(75, 30);
         stopButton.Text = "Stop";
-        stopButton.Location = new Point(93, 646);
+        stopButton.Location = new Point(93, 672);
         stopButton.Size = new Size(75, 30);
         pairButton.Text = "Pair";
-        pairButton.Location = new Point(174, 646);
+        pairButton.Location = new Point(174, 672);
         pairButton.Size = new Size(75, 30);
         revokeButton.Text = "Revoke";
-        revokeButton.Location = new Point(255, 646);
+        revokeButton.Location = new Point(255, 672);
         revokeButton.Size = new Size(82, 30);
         revokeAllButton.Text = "Revoke all";
-        revokeAllButton.Location = new Point(343, 646);
+        revokeAllButton.Location = new Point(343, 672);
         revokeAllButton.Size = new Size(92, 30);
         exitButton.Text = "Exit";
-        exitButton.Location = new Point(485, 646);
+        exitButton.Location = new Point(485, 672);
         exitButton.Size = new Size(75, 30);
 
         withdrawButton.Text = "Withdraw shared";
@@ -195,7 +195,7 @@ public sealed partial class TrayWindow
         discardButton.Location = new Point(123, 631);
         discardButton.Size = new Size(95, 28);
 
-        ClientSize = new Size(580, 691);
+        ClientSize = new Size(580, 717);
         Controls.Add(serviceStatusLabel);
         Controls.Add(serviceStatusValue);
         Controls.Add(urlLabel);
