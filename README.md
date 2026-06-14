@@ -66,7 +66,9 @@ flowchart LR
 ## Build From Source
 
 ```powershell
-$dotnet = 'C:\Universal_Clipboard\.dotnet\dotnet.exe'
+.\scripts\bootstrap.ps1
+
+$dotnet = '.\.dotnet\dotnet.exe'
 & $dotnet restore UniversalClipboard.slnx
 & $dotnet build UniversalClipboard.slnx -c Release --no-restore
 & $dotnet publish src/UniversalClipboard.App/UniversalClipboard.App.csproj -c Release -r win-x64 --self-contained true -o artifacts/win-x64
