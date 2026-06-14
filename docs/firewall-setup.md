@@ -54,7 +54,8 @@ Remove-NetFirewallRule -DisplayName "Universal Clipboard LAN"
 - Make sure the tray-selected adapter matches the iPhone network.
 - Confirm no other process is using TCP `43127`.
 - Try opening the tray URL directly in Safari, for example
-  `http://192.168.1.5:43127/`.
+  `https://192.168.1.5:43127/`. Safari may show a certificate warning because
+  the MVP uses an ephemeral self-signed HTTPS certificate.
 
 The tray's local port-listening check only proves the Windows app is listening. It
 does not prove the iPhone can reach the PC through Wi-Fi isolation or firewall
