@@ -233,6 +233,31 @@ public sealed class ApplicationCompositionTests
     }
 
     [Fact]
+    public void Tray_window_keeps_pending_actions_separate_from_global_commands()
+    {
+        using var window = new TrayWindow();
+        var pendingActions = Buttons(window, "Allow once", "Discard");
+        var globalCommands = Buttons(window, "Start", "Stop", "Pair", "Revoke", "Revoke all", "Exit");
+
+        foreach (var pendingAction in pendingActions)
+        {
+            foreach (var globalCommand in globalCommands)
+            {
+                pendingAction.Bounds.IntersectsWith(globalCommand.Bounds)
+                    .Should()
+                    .BeFalse($"{pendingAction.Text} should not overlap {globalCommand.Text}");
+            }
+        }
+
+        foreach (var button in pendingActions.Concat(globalCommands))
+        {
+            button.Bottom
+                .Should()
+                .BeLessThanOrEqualTo(window.ClientSize.Height, $"{button.Text} should stay inside the tray window");
+        }
+    }
+
+    [Fact]
     public void Tray_window_dispose_hides_notify_icon()
     {
         var window = new TrayWindow();
@@ -545,6 +570,13 @@ public sealed class ApplicationCompositionTests
             IsPortListening: true,
             firewallRuleStatus,
             null);
+
+    private static Button[] Buttons(Form window, params string[] texts)
+    {
+        return texts
+            .Select(text => window.Controls.OfType<Button>().Single(button => button.Text == text))
+            .ToArray();
+    }
 
     private static AuthorizationMetadata Metadata(
         Guid id,
