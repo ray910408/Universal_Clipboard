@@ -66,13 +66,16 @@ function Test-RestoreRequired {
         return $true
     }
 
-    $assetPaths = @(
-        $projects | ForEach-Object {
-            Join-Path $_.DirectoryName 'obj/project.assets.json'
-            Join-Path $_.DirectoryName 'packages.lock.json'
-        }
+    $lockFilePaths = @(
+        $projects | ForEach-Object { Join-Path $_.DirectoryName 'packages.lock.json' }
     )
+    if ($lockFilePaths | Where-Object { -not (Test-Path $_) }) {
+        return $true
+    }
 
+    $assetPaths = @(
+        $projects | ForEach-Object { Join-Path $_.DirectoryName 'obj/project.assets.json' }
+    )
     if ($assetPaths | Where-Object { -not (Test-Path $_) }) {
         return $true
     }
@@ -83,7 +86,7 @@ function Test-RestoreRequired {
         Join-Path $RepoRoot 'Directory.Packages.props'
     )
     $restoreInputs += $projects.FullName
-
+    $restoreInputs += $lockFilePaths
     $existingInputs = @(
         $restoreInputs |
             Where-Object { Test-Path $_ } |
