@@ -42,7 +42,7 @@ function Invoke-DotNetCommand {
 
     & $DotNetPath @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "dotnet $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+        throw "$DotNetPath $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
 }
 
