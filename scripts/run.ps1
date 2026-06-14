@@ -197,14 +197,10 @@ try {
     Write-Info 'iPhone Safari should use the tray URL, for example: https://<LAN-IP>:43127/'
     Write-Info 'Keep this PowerShell window open while running from source. Press Ctrl+C to stop dotnet run.'
 
-    Invoke-DotNetCommand -DotNetPath $dotnet -Arguments @(
-        'run',
-        '--project',
-        $appProject,
-        '-c',
-        $Configuration,
-        '--no-build'
-    )
+    & $dotnet run --project $appProject -c $Configuration --no-build
+    if ($LASTEXITCODE -notin @(0, 3221225786)) {
+        throw "dotnet run failed with exit code $LASTEXITCODE."
+    }
 } finally {
     Pop-Location
 }
