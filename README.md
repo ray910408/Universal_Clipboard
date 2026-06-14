@@ -19,9 +19,10 @@ This MVP is intentionally local-first:
 - TCP port `43127` reachable from the iPhone.
 - For source builds, .NET 10 SDK.
 
-The app serves plain HTTP on the selected LAN address, for example
-`http://192.168.1.5:43127/`. Do not use it on public, guest, hotel, school, or
-untrusted networks.
+The app serves an ephemeral self-signed HTTPS endpoint on the selected LAN
+address, for example `https://192.168.1.5:43127/`. Safari may show a certificate
+warning because this MVP does not install a private CA or pin the certificate.
+Do not use it on public, guest, hotel, school, or untrusted networks.
 
 ## Build From Source
 
@@ -54,8 +55,8 @@ MVP; verify the source and checksums before running builds you did not create.
 6. Generate a pairing QR code in the tray window.
 7. Open or scan the pairing URL on iPhone Safari.
 8. Copy text on Windows. Sensitive-looking text is held for approval in the tray.
-9. On iPhone, tap **Copy to iPhone**. If browser copy is unavailable over HTTP, use
-   the selected textarea and long-press **Copy**.
+9. On iPhone, tap **Copy to iPhone**. If Safari does not allow one-tap
+   clipboard copy, use the selected textarea and long-press **Copy**.
 
 ## Pairing Durations
 
@@ -74,17 +75,22 @@ is valid. Revoke one browser or revoke all from the tray window.
 Clipboard text stays in process memory only. Restarting the Windows app clears
 shared and pending clipboard content. Authorization metadata is stored under
 `%LOCALAPPDATA%\UniversalClipboard\authorizations.v1.bin` and protected with Windows
-DPAPI for the current user.
+DPAPI for the current user. The file stores token and session-proof digests, not
+plaintext session tokens, session proofs, pairing codes, or clipboard text.
 
 Important limits:
 
-- The MVP uses HTTP, not HTTPS. Same-network traffic can be observed or modified by
-  a capable attacker.
-- The session cookie is scoped to `/clip-api`, but HTTP cookies are not isolated by
-  TCP port. A different service on the same IP and matching path could receive it.
-- The cookie cannot use the `Secure` flag because the MVP is HTTP.
+- The MVP uses an ephemeral self-signed HTTPS certificate. This prevents simple
+  passive HTTP sniffing, but it is not a full trust model: there is no private CA,
+  certificate pinning, or first-use fingerprint verification.
+- An active same-network attacker may still attack the first certificate acceptance
+  flow. Use the app only on trusted Private networks.
+- Authorization requires both the host-scoped HttpOnly `clip_session` cookie and an
+  independent `X-Clip-Session` proof stored in Safari `sessionStorage`. The cookie
+  uses `HttpOnly`, `Secure`, `SameSite=Strict`, and `Path=/clip-api`.
 - Sensitive detection is a guardrail, not data loss prevention. It covers PEM
-  private keys, GitHub-style tokens, and AWS access-key identifiers.
+  private keys, GitHub classic and fine-grained tokens, and AWS `AKIA`/`ASIA`
+  access-key identifiers.
 - Windows may write process memory to pagefile, hibernation files, or crash dumps.
 - A compromised Windows machine, paired browser, or LAN invalidates the trust model.
 
@@ -100,7 +106,8 @@ Important limits:
 - **Expired or reused QR**: generate a new pairing code. Codes are single-use and
   expire after two minutes.
 - **Copy button does not confirm Copied**: use the visible selected text and
-  long-press Copy. Manual copy is the reliable HTTP baseline for Safari.
+  long-press Copy. Manual copy is the reliable Safari fallback when one-tap
+  Clipboard API access is unavailable.
 
 ## Manual Release Gates
 
