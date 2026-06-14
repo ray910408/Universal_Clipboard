@@ -39,7 +39,7 @@ rule for TCP `43127`, run from **Administrator PowerShell**:
 delete
 
 ```powershell
-scripts/remove-firewall.ps1
+.\scripts\remove-firewall.ps1
 ```
 
 ## Requirements
