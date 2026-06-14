@@ -100,6 +100,8 @@ internal static class Program
                     context,
                     new WindowsClipboardNativeListener(),
                     scheduler));
+            
+            context.ShowTray();
 
             Application.Run(context);
         }
