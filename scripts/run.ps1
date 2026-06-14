@@ -34,6 +34,101 @@ function Test-IsAdministrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Invoke-DotNetCommand {
+    param(
+        [string]$DotNetPath,
+        [string[]]$Arguments,
+        [switch]$AllowCtrlCExit
+    )
+
+    & $DotNetPath @Arguments
+    $exitCode = [int]$LASTEXITCODE
+    if ($exitCode -eq 0) {
+        return
+    }
+
+    $unsignedExitCode = if ($exitCode -lt 0) {
+        [uint32]([int64]$exitCode + 4294967296)
+    } else {
+        [uint32]$exitCode
+    }
+
+    if ($AllowCtrlCExit -and $unsignedExitCode -eq 0xC000013A) {
+        return
+    }
+
+    throw ("dotnet {0} failed with exit code 0x{1:X8} ({2})." -f (
+        $Arguments -join ' '),
+        $unsignedExitCode,
+        $exitCode)
+}
+
+function Test-RestoreRequired {
+    param(
+        [string]$RepoRoot,
+        [string]$Solution
+    )
+
+    $projectRoots = @(
+        Join-Path $RepoRoot 'src'
+        Join-Path $RepoRoot 'tests'
+    ) | Where-Object { Test-Path $_ }
+    $projects = @(
+        $projectRoots | ForEach-Object {
+            Get-ChildItem -Path $_ -Recurse -Filter *.csproj -File
+        }
+    )
+
+    if ($projects.Count -eq 0) {
+        return $true
+    }
+
+    $assetPaths = @(
+        $projects | ForEach-Object {
+            Join-Path $_.DirectoryName 'obj/project.assets.json'
+        }
+    )
+
+    if ($assetPaths | Where-Object { -not (Test-Path $_) }) {
+        return $true
+    }
+
+    $restoreInputs = @(
+        $Solution
+        Join-Path $RepoRoot 'Directory.Build.props'
+        Join-Path $RepoRoot 'Directory.Packages.props'
+    )
+    $restoreInputs += $projects.FullName
+    $restoreInputs += @(
+        $projects | ForEach-Object {
+            Join-Path $_.DirectoryName 'packages.lock.json'
+        }
+    )
+
+    $existingInputs = @(
+        $restoreInputs |
+            Where-Object { Test-Path $_ } |
+            ForEach-Object { Get-Item $_ }
+    )
+    if ($existingInputs.Count -eq 0) {
+        return $true
+    }
+
+    $latestInput = (
+        $existingInputs |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+    ).LastWriteTimeUtc
+    $oldestAsset = (
+        $assetPaths |
+            ForEach-Object { Get-Item $_ } |
+            Sort-Object LastWriteTimeUtc |
+            Select-Object -First 1
+    ).LastWriteTimeUtc
+
+    return $latestInput -gt $oldestAsset
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $solution = Join-Path $repoRoot 'UniversalClipboard.slnx'
 $appProject = Join-Path $repoRoot 'src/UniversalClipboard.App/UniversalClipboard.App.csproj'
@@ -100,11 +195,22 @@ if ($ConfigureFirewall) {
 
 Push-Location $repoRoot
 try {
-    Write-Step 'Restoring packages'
-    & $dotnet restore $solution
+    if (Test-RestoreRequired -RepoRoot $repoRoot -Solution $solution) {
+        Write-Step 'Restoring packages'
+        Invoke-DotNetCommand -DotNetPath $dotnet -Arguments @('restore', $solution)
+    } else {
+        Write-Step 'Skipping package restore'
+        Write-Info 'Restore assets are current. Package/security checks still run in CI.'
+    }
 
     Write-Step "Building Universal Clipboard ($Configuration)"
-    & $dotnet build $solution -c $Configuration --no-restore
+    Invoke-DotNetCommand -DotNetPath $dotnet -Arguments @(
+        'build',
+        $solution,
+        '-c',
+        $Configuration,
+        '--no-restore'
+    )
 
     Write-Step 'Starting Universal Clipboard tray app'
     Write-Info 'Windows management stays in the tray UI.'
@@ -112,7 +218,14 @@ try {
     Write-Info 'iPhone Safari should use the tray URL, for example: https://<LAN-IP>:43127/'
     Write-Info 'Keep this PowerShell window open while running from source. Press Ctrl+C to stop dotnet run.'
 
-    & $dotnet run --project $appProject -c $Configuration --no-build
+    Invoke-DotNetCommand -DotNetPath $dotnet -Arguments @(
+        'run',
+        '--project',
+        $appProject,
+        '-c',
+        $Configuration,
+        '--no-build'
+    ) -AllowCtrlCExit
 } finally {
     Pop-Location
 }
