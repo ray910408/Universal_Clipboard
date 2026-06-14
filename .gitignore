@@ -17,8 +17,7 @@ artifacts/
 .gstack/
 .hermes/
 
-# tests and test output are kept local for this publish branch
-tests/
+# CI docs and generated test output kept local for this publish branch
 .github/
 docs/superpowers/
 TestResults/
