@@ -333,7 +333,7 @@ public sealed class LocalWebHostTests
         var response = await fixture.Client.SendAsync(request);
 
         await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
-        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+        response.Headers.Contains("Set-Cookie").Should().BeFalse();
     }
 
     [Fact]
@@ -882,13 +882,15 @@ public sealed class LocalWebHostTests
             AuthorizationCoordinator coordinator,
             PairingCodeManager pairingCodes,
             ClipboardHistory history,
-            ManualTimeProvider clock)
+            ManualTimeProvider clock,
+            AuthorizationDuration pairingDuration)
         {
             Host = host;
             Coordinator = coordinator;
             PairingCodes = pairingCodes;
             History = history;
             Clock = clock;
+            PairingDuration = pairingDuration;
             Client = new HttpClient(new HttpClientHandler
             {
                 ServerCertificateCustomValidationCallback =
@@ -911,6 +913,8 @@ public sealed class LocalWebHostTests
         public ManualTimeProvider Clock { get; }
 
         public HttpClient Client { get; }
+
+        private AuthorizationDuration PairingDuration { get; }
 
         public static async Task<HostFixture> StartAsync(
             FakeAuthorizationPersistence? persistence = null,
@@ -968,7 +972,7 @@ public sealed class LocalWebHostTests
                 loggerFactory,
                 responseWriter,
                 timeouts);
-            return new HostFixture(host, coordinator, pairingCodes, history, clock);
+            return new HostFixture(host, coordinator, pairingCodes, history, clock, pairingDuration);
         }
 
         public async Task<HttpResponseMessage> PostPairAsync(string code, string label) =>
@@ -978,7 +982,7 @@ public sealed class LocalWebHostTests
 
         public async Task<SessionPair> PairAsync()
         {
-            var response = await PostPairAsync(PairingCodes.Create().Value, "Phone");
+            var response = await PostPairAsync(PairingCodes.Create(PairingDuration).Value, "Phone");
             response.EnsureSuccessStatusCode();
             var proof = (await ReadJsonAsync(response)).RootElement.GetProperty("sessionProof").GetString()!;
             return new SessionPair(GetCookie(response), proof);

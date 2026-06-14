@@ -219,7 +219,7 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
             throw new InvalidDataException("Unexpected trailing authorization data.");
         }
 
-        return new AuthorizationDocument(authorizations.MoveToImmutable());
+        return new AuthorizationDocument(authorizations.ToImmutable());
     }
 
     private static DateTimeOffset ReadUtc(BinaryReader reader)

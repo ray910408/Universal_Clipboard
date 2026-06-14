@@ -1,0 +1,47 @@
+name: build
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+      - "codex/**"
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore UniversalClipboard.slnx /p:NuGetAudit=false
+
+      - name: Build
+        run: dotnet build UniversalClipboard.slnx -c Release --no-restore /p:NuGetAudit=false
+
+      - name: Test
+        run: dotnet test UniversalClipboard.slnx -c Release --no-build /p:NuGetAudit=false
+
+      - name: Publish win-x64
+        run: dotnet publish src/UniversalClipboard.App/UniversalClipboard.App.csproj -c Release -r win-x64 --self-contained true -o artifacts/win-x64 /p:NuGetAudit=false
+
+      - name: SHA-256 checksum
+        shell: pwsh
+        run: |
+          $hash = Get-FileHash artifacts/win-x64/UniversalClipboard.App.exe -Algorithm SHA256
+          "$($hash.Hash)  UniversalClipboard.App.exe" | Set-Content -Path artifacts/win-x64/UniversalClipboard.App.exe.sha256 -Encoding ASCII
+          Get-Content artifacts/win-x64/UniversalClipboard.App.exe.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UniversalClipboard-win-x64
+          path: artifacts/win-x64/**

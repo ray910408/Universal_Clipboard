@@ -3,4 +3,8 @@
     <Project Path="src/UniversalClipboard.App/UniversalClipboard.App.csproj" />
     <Project Path="src/UniversalClipboard.Core/UniversalClipboard.Core.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/UniversalClipboard.App.Tests/UniversalClipboard.App.Tests.csproj" />
+    <Project Path="tests/UniversalClipboard.Core.Tests/UniversalClipboard.Core.Tests.csproj" />
+  </Folder>
 </Solution>

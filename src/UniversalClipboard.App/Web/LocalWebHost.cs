@@ -899,7 +899,7 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         return X509CertificateLoader.LoadPkcs12(
             certificate.Export(X509ContentType.Pkcs12),
             password: null,
-            X509KeyStorageFlags.EphemeralKeySet);
+            X509KeyStorageFlags.UserKeySet);
     }
 
     private static string GetCoarseSource(IPAddress? address)
