@@ -22,6 +22,18 @@ The MVP flow is:
 The first version is for one user on a trusted private Wi-Fi network. Pairing is
 required before a browser can retrieve clipboard content.
 
+## Architecture Sketch
+
+```mermaid
+flowchart LR
+    A["Windows clipboard"] --> B["UniversalClipboard.App tray process"]
+    B --> C["Local Kestrel HTTPS<br/>self-signed cert on :43127"]
+    C --> D["iPhone Safari page<br/>paired same-LAN browser"]
+    D --> E{"Copy path"}
+    E -->|Preferred when available| F["Clipboard API copy"]
+    E -->|Reliable fallback| G["Manual textarea selection<br/>long-press Copy"]
+```
+
 ## What Makes This Cool
 
 The useful moment is not file transfer. It is making a small Windows-to-iPhone text
@@ -104,10 +116,10 @@ scope control as a release requirement.
 
 ## Approaches Considered
 
-### Approach A: Local HTTP MVP
+### Approach A: Local Self-Signed HTTPS MVP
 
-Use a Windows tray application with an embedded HTTP server and a responsive,
-framework-free web page.
+Use a Windows tray application with an embedded Kestrel HTTPS server backed by an
+ephemeral self-signed certificate and a responsive, framework-free web page.
 
 - Effort: Small
 - Risk: Medium
@@ -117,7 +129,10 @@ framework-free web page.
   - No iPhone app, account, certificate profile, or hosted service.
   - The application does not upload clipboard content.
 - Disadvantages:
-  - Traffic and authorization tokens are not encrypted.
+  - Avoids passive LAN sniffing compared with cleartext HTTP.
+  - Safari may show a certificate warning because the certificate is self-signed.
+  - The first certificate acceptance is not protected against an active same-network
+    MITM because there is no private CA or pinning.
   - Safari may require manual copy after text selection.
   - LAN routing and Windows Firewall can make setup unreliable.
 
@@ -157,8 +172,9 @@ encrypted snapshots and paired browsers retrieve and decrypt them.
 
 ## Recommended Approach
 
-Build Approach A for the MVP. Approach C is a future redesign, not code that will be
-prebuilt behind speculative interfaces.
+Build Approach A for the MVP: local Kestrel HTTPS with an ephemeral self-signed
+certificate. Approach C is a future redesign, not code that will be prebuilt behind
+speculative interfaces.
 
 Use `.NET 10 LTS`, C#, WinForms, and an in-process ASP.NET Core Kestrel server. .NET
 10 is the current active LTS release as of June 2026. Publish a self-contained
@@ -178,7 +194,7 @@ The following requested features remain in the MVP:
 To keep that scope viable:
 
 - no mDNS or automatic discovery;
-- no HTTPS or certificate installation;
+- no private CA, certificate-profile installation, or certificate pinning;
 - no PWA;
 - no WebSocket or SSE;
 - no cloud code;
@@ -309,7 +325,7 @@ vectors, and runs in linear time. A match means `possible sensitive content`, no
   the previous code.
 - The code contains 192 random bits encoded as base64url without padding.
 - It expires after two minutes or one successful exchange.
-- QR URL format: `http://<selected-ip>:43127/pair#code=<code>`.
+- QR URL format: `https://<selected-ip>:43127/pair#code=<code>`.
 - Pair-page JavaScript reads the fragment, immediately calls
   `history.replaceState(null, "", "/pair")`, then submits the code. If URL cleanup
   throws or the fragment is malformed, it does not submit. The mutable JavaScript
@@ -320,8 +336,8 @@ vectors, and runs in linear time. A match means `possible sensitive content`, no
   and twenty attempts per minute process-wide.
 
 The fragment prevents normal server access logs and referrer headers from containing
-the code. It does not protect the code from HTTP interception, browser compromise, or
-the person viewing the QR code.
+the code. It does not protect the code from an active same-network attacker during
+first certificate acceptance, browser compromise, or the person viewing the QR code.
 
 ### Session Authorization
 
@@ -341,9 +357,10 @@ the person viewing the QR code.
   token, so
   cookie-only requests, wrong proofs, replaying the cookie value as the proof, and
   proof-only requests are unauthorized.
-- Cookies do not isolate TCP ports. A different HTTP service on the same IP can
-  receive the cookie for matching `/clip-api` paths. The unusual path reduces
-  accidental exposure but does not remove this HTTP risk.
+- Cookies do not isolate TCP ports. A different same-host service that the browser
+  accepts for that origin can receive the cookie for matching `/clip-api` paths. The
+  unusual path reduces accidental exposure but does not remove same-host cookie
+  scope risk.
 - Expiring durations set matching `Max-Age` and server expiry.
 - Permanent sets a far-future cookie expiry but has no server expiry. Browser
   retention is not guaranteed.
@@ -493,7 +510,7 @@ not `Blocked` or `Allowed`.
   4. The optional legacy `execCommand("copy")` path may run, but its return value is
      not treated as confirmed clipboard state. The UI displays `Copy requested -
      verify, or long-press and choose Copy`.
-- Manual selection is the normative HTTP behavior and must work even if all
+- Manual selection is the normative fallback and must work even if all
   programmatic copy APIs fail.
 - On `visibilitychange` to hidden, `pagehide`, `401`, or pairing-state transition,
   the page stops polling and removes clipboard text from the DOM.
@@ -504,7 +521,11 @@ not `Blocked` or `Allowed`.
 The approved interaction sketch is in
 [`docs/ux-wireframe.html`](./ux-wireframe.html).
 
-## HTTP Contract
+## HTTPS Transport And HTTP Contract
+
+The local listener serves the page and API over self-signed HTTPS on the selected
+IPv4 address and TCP `43127`. HTTP below refers to HTTP semantics inside that HTTPS
+transport, not cleartext HTTP.
 
 All JSON uses UTF-8 and `Content-Type: application/json`. Every static and API
 response uses `Cache-Control: no-store, max-age=0`, `Pragma: no-cache`,
@@ -781,8 +802,8 @@ The MVP is complete only when all of these are true:
   failed `replaceState`, refresh, and app switching;
 - malformed fragments and failed fragment cleanup, asserting that no exchange request
   is sent and the code variable is cleared;
-- a controlled same-IP second-port page demonstrating the documented HTTP cookie
-  port-isolation limitation.
+- a controlled same-IP second-port page demonstrating the documented same-host
+  cookie port-isolation limitation.
 
 ## Distribution Plan
 
@@ -794,7 +815,8 @@ For the first release:
 - Release artifacts contain a self-contained `win-x64` portable application and
   SHA-256 checksum.
 - Setup documentation includes the exact administrator firewall command, network
-  limitations, pairing, duration semantics, HTTP warning, and Safari fallback.
+  limitations, pairing, duration semantics, self-signed HTTPS warning, and Safari
+  fallback.
 - Code signing and an installer are deferred. Documentation warns that an unsigned
   build may trigger Windows SmartScreen.
 

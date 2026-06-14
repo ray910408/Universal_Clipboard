@@ -19,10 +19,24 @@ This MVP is intentionally local-first:
 - TCP port `43127` reachable from the iPhone.
 - For source builds, .NET 10 SDK.
 
-The app serves an ephemeral self-signed HTTPS endpoint on the selected LAN
-address, for example `https://192.168.1.5:43127/`. Safari may show a certificate
-warning because this MVP does not install a private CA or pin the certificate.
-Do not use it on public, guest, hotel, school, or untrusted networks.
+The app currently serves an ephemeral self-signed HTTPS endpoint on the selected
+LAN address, for example `https://192.168.1.5:43127/`. This encrypts the local
+transport and helps against passive LAN sniffing, but it is **not** a complete
+trust model: there is no private CA, certificate pinning, or first-use
+fingerprint verification. Safari may show a certificate warning. Do not use it
+on public, guest, hotel, school, or untrusted networks.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A["Windows clipboard"] --> B["UniversalClipboard.App tray process"]
+    B --> C["Local Kestrel HTTPS<br/>self-signed cert on :43127"]
+    C --> D["iPhone Safari page<br/>paired same-LAN browser"]
+    D --> E{"Copy path"}
+    E -->|Preferred when available| F["Clipboard API copy"]
+    E -->|Reliable fallback| G["Manual textarea selection<br/>long-press Copy"]
+```
 
 ## Build From Source
 
@@ -79,8 +93,8 @@ plaintext session tokens, session proofs, pairing codes, or clipboard text.
 
 Important limits:
 
-- The MVP uses an ephemeral self-signed HTTPS certificate. This prevents simple
-  passive HTTP sniffing, but it is not a full trust model: there is no private CA,
+- The MVP currently uses an ephemeral self-signed HTTPS certificate. This reduces
+  passive LAN sniffing, but it is not a full trust model: there is no private CA,
   certificate pinning, or first-use fingerprint verification.
 - An active same-network attacker may still attack the first certificate acceptance
   flow. Use the app only on trusted Private networks.
