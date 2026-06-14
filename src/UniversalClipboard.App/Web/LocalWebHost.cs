@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -54,6 +56,7 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
 
     private const int PairBodyLimit = 1024;
     private const string SessionCookieName = "clip_session";
+    private const string SessionProofHeaderName = "X-Clip-Session";
     private const string SessionCookiePath = "/clip-api";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -71,11 +74,13 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
     private readonly LocalWebHostTimeouts _timeouts;
     private readonly RequestRateLimiter _pairRateLimiter;
     private readonly RequestRateLimiter _clipRateLimiter;
+
     private readonly CancellationTokenSource _handlerShutdown = new();
     private readonly object _handlerGate = new();
     private TaskCompletionSource _handlersDrained =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private WebApplication? _application;
+    private X509Certificate2? _httpsCertificate;
     private int _activeHandlers;
     private int _stopStarted;
 
@@ -150,9 +155,10 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
             });
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton(_loggerFactory);
+        var httpsCertificate = CreateHttpsCertificate(_endpoint.Address);
         builder.WebHost.ConfigureKestrel(options =>
         {
-            options.Listen(_endpoint);
+            options.Listen(_endpoint, listen => listen.UseHttps(httpsCertificate));
             options.Limits.MaxRequestBodySize = 1_048_576;
             options.AddServerHeader = false;
         });
@@ -160,6 +166,7 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         var application = builder.Build();
         application.Run(DispatchAsync);
         _application = application;
+        _httpsCertificate = httpsCertificate;
 
         try
         {
@@ -168,7 +175,9 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         catch
         {
             _application = null;
+            _httpsCertificate = null;
             await application.DisposeAsync();
+            httpsCertificate.Dispose();
             throw;
         }
     }
@@ -220,8 +229,11 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         if (_application is not null)
         {
             await _application.DisposeAsync();
+            _application = null;
         }
 
+        _httpsCertificate?.Dispose();
+        _httpsCertificate = null;
         _handlerShutdown.Dispose();
     }
 
@@ -374,15 +386,13 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
 
     private async Task HandlePairExchangeAsync(HttpContext context)
     {
-        var source = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        if (!_pairRateLimiter.TryAcquire(source, out var retryAfter))
+        if (IsCrossSiteBrowserRequest(context.Request))
         {
-            context.Response.Headers.RetryAfter = retryAfter.ToString(CultureInfo.InvariantCulture);
             await WriteErrorAsync(
                 context,
-                StatusCodes.Status429TooManyRequests,
-                "rate_limited",
-                "Too many pairing attempts.");
+                StatusCodes.Status403Forbidden,
+                "cross_origin_denied",
+                "Cross-origin pairing requests are not allowed.");
             return;
         }
 
@@ -393,6 +403,18 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
                 StatusCodes.Status415UnsupportedMediaType,
                 "unsupported_media_type",
                 "The request must use application/json.");
+            return;
+        }
+
+        var source = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        if (!_pairRateLimiter.TryAcquire(source, out var retryAfter))
+        {
+            context.Response.Headers.RetryAfter = retryAfter.ToString(CultureInfo.InvariantCulture);
+            await WriteErrorAsync(
+                context,
+                StatusCodes.Status429TooManyRequests,
+                "rate_limited",
+                "Too many pairing attempts.");
             return;
         }
 
@@ -484,6 +506,7 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         var authorization = result.Authorization!;
         var cookieValue =
             $"{EncodeGuid(authorization.Id)}.{result.Token!.Value}";
+        var sessionProof = result.SessionProof!;
         var maxAge = authorization.ExpiresAtUtc is { } expiresAtUtc
             ? expiresAtUtc - authorization.CreatedAtUtc
             : TimeSpan.FromDays(3650);
@@ -493,7 +516,7 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
             new CookieOptions
             {
                 HttpOnly = true,
-                Secure = false,
+                Secure = true,
                 SameSite = SameSiteMode.Strict,
                 Path = SessionCookiePath,
                 MaxAge = maxAge,
@@ -506,19 +529,20 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
             new PairExchangeResponse(
                 true,
                 EncodeGuid(authorization.Id),
-                authorization.ExpiresAtUtc));
+                authorization.ExpiresAtUtc,
+                sessionProof));
     }
 
     private async Task HandleClipsAsync(HttpContext context)
     {
-        if (!TryReadSession(context.Request, out var authorizationId, out var token))
+        if (!TryReadSession(context.Request, out var authorizationId, out var token, out var sessionProof))
         {
             await WriteUnauthorizedAsync(context);
             return;
         }
 
         var leaseResult = _authorization.AcquireLease(
-            new AcquireLeaseRequest(authorizationId, token, _endpoint.Address));
+            new AcquireLeaseRequest(authorizationId, token, _endpoint.Address, sessionProof));
         if (!leaseResult.Succeeded)
         {
             await WriteUnauthorizedAsync(context);
@@ -672,14 +696,18 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         return true;
     }
 
-    private static bool TryReadSession(
+    private bool TryReadSession(
         HttpRequest request,
         out Guid authorizationId,
-        out SessionToken token)
+        out SessionToken token,
+        out string sessionProof)
     {
         authorizationId = default;
         token = null!;
-        if (!request.Cookies.TryGetValue(SessionCookieName, out var cookie))
+        sessionProof = "";
+        if (!request.Cookies.TryGetValue(SessionCookieName, out var cookie) ||
+            !request.Headers.TryGetValue(SessionProofHeaderName, out var proofValues) ||
+            proofValues.Count != 1)
         {
             return false;
         }
@@ -693,6 +721,7 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         }
 
         token = parsedToken!;
+        sessionProof = proofValues[0]!;
         return true;
     }
 
@@ -794,7 +823,7 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
                 Path = SessionCookiePath,
                 HttpOnly = true,
                 SameSite = SameSiteMode.Strict,
-                Secure = false,
+                Secure = true,
                 MaxAge = TimeSpan.Zero,
                 Expires = DateTimeOffset.UnixEpoch,
             });
@@ -814,6 +843,63 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         response.Headers.ContentSecurityPolicy = ContentSecurityPolicy;
         response.Headers["Referrer-Policy"] = "no-referrer";
         response.Headers.XContentTypeOptions = "nosniff";
+    }
+
+    private bool IsCrossSiteBrowserRequest(HttpRequest request)
+    {
+        if (request.Headers.TryGetValue("Sec-Fetch-Site", out var fetchSiteValues) &&
+            fetchSiteValues.Any(value =>
+                string.Equals(value, "cross-site", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (!request.Headers.TryGetValue("Origin", out var originValues))
+        {
+            return false;
+        }
+
+        return originValues.Count != 1 ||
+            !Uri.TryCreate(originValues[0], UriKind.Absolute, out var origin) ||
+            !string.Equals(origin.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(origin.Host, _endpoint.Address.ToString(), StringComparison.OrdinalIgnoreCase) ||
+            origin.Port != _endpoint.Port;
+    }
+
+    private static X509Certificate2 CreateHttpsCertificate(IPAddress address)
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var request = new CertificateRequest(
+            "CN=Universal Clipboard Local Web",
+            key,
+            HashAlgorithmName.SHA256);
+        var san = new SubjectAlternativeNameBuilder();
+        san.AddIpAddress(address);
+        if (!IPAddress.Loopback.Equals(address))
+        {
+            san.AddIpAddress(IPAddress.Loopback);
+        }
+
+        san.AddDnsName("localhost");
+        request.CertificateExtensions.Add(san.Build());
+        request.CertificateExtensions.Add(
+            new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, critical: true));
+        request.CertificateExtensions.Add(
+            new X509EnhancedKeyUsageExtension(
+                new OidCollection
+                {
+                    new Oid("1.3.6.1.5.5.7.3.1"),
+                },
+                critical: false));
+
+        var now = DateTimeOffset.UtcNow;
+        using var certificate = request.CreateSelfSigned(
+            now.AddMinutes(-5),
+            now.AddDays(7));
+        return X509CertificateLoader.LoadPkcs12(
+            certificate.Export(X509ContentType.Pkcs12),
+            password: null,
+            X509KeyStorageFlags.EphemeralKeySet);
     }
 
     private static string GetCoarseSource(IPAddress? address)

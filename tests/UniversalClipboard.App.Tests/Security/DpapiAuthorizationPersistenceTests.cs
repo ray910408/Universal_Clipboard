@@ -25,6 +25,24 @@ public sealed class DpapiAuthorizationPersistenceTests : IDisposable
         var actual = await persistence.LoadAsync();
 
         actual.Should().BeEquivalentTo(expected);
+        actual.Authorizations[0].SessionProofDigest.Should().Equal(
+            expected.Authorizations[0].SessionProofDigest);
+    }
+
+    [Fact]
+    public async Task Legacy_document_without_session_proof_digest_revokes_authorizations_on_load()
+    {
+        var files = new MemoryAuthorizationFileOperations();
+        var persistence = new DpapiAuthorizationPersistence(
+            "auth.bin",
+            files,
+            new TestDataProtector());
+        files.WriteAllBytesAndFlush("auth.bin", CreateLegacyVersion1DocumentWithoutProofDigest());
+
+        var loaded = await persistence.LoadAsync();
+
+        loaded.Authorizations.Should().BeEmpty();
+        files.Exists("auth.bin.corrupt").Should().BeFalse();
     }
 
     [Theory]
@@ -158,8 +176,37 @@ public sealed class DpapiAuthorizationPersistenceTests : IDisposable
             new DateTimeOffset(2026, 6, 12, 1, 2, 3, TimeSpan.Zero),
             IPAddress.Parse("192.168.1.25"),
             new DateTimeOffset(2026, 6, 12, 6, 2, 3, TimeSpan.Zero),
-            ImmutableArray.Create(Enumerable.Range(1, 32).Select(value => (byte)value).ToArray()));
+            ImmutableArray.Create(Enumerable.Range(1, 32).Select(value => (byte)value).ToArray()),
+            ImmutableArray.Create(Enumerable.Range(33, 32).Select(value => (byte)value).ToArray()));
         return new AuthorizationDocument([record]);
+    }
+
+    private static byte[] CreateLegacyVersion1DocumentWithoutProofDigest()
+    {
+        var document = CreateDocument();
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        writer.Write(1);
+        writer.Write(document.Authorizations.Length);
+
+        foreach (var authorization in document.Authorizations)
+        {
+            writer.Write(authorization.Id.ToByteArray());
+            writer.Write(authorization.Label);
+            writer.Write(authorization.CreatedAtUtc.UtcTicks);
+            writer.Write(authorization.BoundHostIpv4.GetAddressBytes());
+            writer.Write(authorization.ExpiresAtUtc.HasValue);
+            if (authorization.ExpiresAtUtc is { } expiresAtUtc)
+            {
+                writer.Write(expiresAtUtc.UtcTicks);
+            }
+
+            writer.Write(authorization.TokenDigest.Length);
+            writer.Write(authorization.TokenDigest.AsSpan());
+        }
+
+        writer.Flush();
+        return stream.ToArray();
     }
 
     private static void AssertCurrentUserOnly(FileSystemSecurity security)

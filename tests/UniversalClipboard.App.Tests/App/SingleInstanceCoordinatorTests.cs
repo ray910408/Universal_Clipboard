@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.IO.Pipes;
+using System.Text;
 using FluentAssertions;
 using UniversalClipboard.App.App;
 
@@ -144,6 +147,43 @@ public sealed class SingleInstanceCoordinatorTests
     {
         var transport = new WindowsSingleInstanceTransport();
         var pipeName = "UniversalClipboard.test." + Guid.NewGuid().ToString("N");
+        var failNext = true;
+        await using var server = transport.StartServer(
+            new SingleInstancePipeRegistration(
+                pipeName,
+                "S-1-5-21-test",
+                AllowsCurrentUserOnly: true),
+            (_, _) =>
+            {
+                if (failNext)
+                {
+                    failNext = false;
+                    throw new InvalidOperationException("handler failed");
+                }
+
+                return ValueTask.CompletedTask;
+            });
+
+        var failed = await transport.TrySendAsync(
+            pipeName,
+            SingleInstanceCoordinator.ShowTrayMessage,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+        var succeeded = await transport.TrySendAsync(
+            pipeName,
+            SingleInstanceCoordinator.ShowTrayMessage,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        failed.Should().Be(SingleInstanceSendResult.Rejected);
+        succeeded.Should().Be(SingleInstanceSendResult.Delivered);
+    }
+
+    [Fact]
+    public async Task Windows_transport_rejects_unknown_messages_before_owner_handler()
+    {
+        var transport = new WindowsSingleInstanceTransport();
+        var pipeName = "UniversalClipboard.test." + Guid.NewGuid().ToString("N");
         var handled = new List<string>();
         await using var server = transport.StartServer(
             new SingleInstancePipeRegistration(
@@ -153,28 +193,88 @@ public sealed class SingleInstanceCoordinatorTests
             (message, _) =>
             {
                 handled.Add(message);
-                if (message == "fail")
-                {
-                    throw new InvalidOperationException("handler failed");
-                }
-
                 return ValueTask.CompletedTask;
             });
 
-        var failed = await transport.TrySendAsync(
+        var rejected = await transport.TrySendAsync(
             pipeName,
-            "fail",
+            "ShowTray\0Injected",
             TimeSpan.FromSeconds(5),
             CancellationToken.None);
-        var succeeded = await transport.TrySendAsync(
+        var accepted = await transport.TrySendAsync(
             pipeName,
-            "ok",
+            SingleInstanceCoordinator.ShowTrayMessage,
             TimeSpan.FromSeconds(5),
             CancellationToken.None);
 
-        failed.Should().Be(SingleInstanceSendResult.Rejected);
-        succeeded.Should().Be(SingleInstanceSendResult.Delivered);
-        handled.Should().Equal("fail", "ok");
+        rejected.Should().Be(SingleInstanceSendResult.Rejected);
+        accepted.Should().Be(SingleInstanceSendResult.Delivered);
+        handled.Should().Equal(SingleInstanceCoordinator.ShowTrayMessage);
+    }
+
+    [Fact]
+    public async Task Windows_transport_times_out_no_newline_client_and_accepts_next_show_tray()
+    {
+        var transport = new WindowsSingleInstanceTransport();
+        var pipeName = "UniversalClipboard.test." + Guid.NewGuid().ToString("N");
+        var handled = new List<string>();
+        await using var server = transport.StartServer(
+            new SingleInstancePipeRegistration(
+                pipeName,
+                "S-1-5-21-test",
+                AllowsCurrentUserOnly: true),
+            (message, _) =>
+            {
+                handled.Add(message);
+                return ValueTask.CompletedTask;
+            });
+
+        await using var slowClient = await ConnectAndWritePipeBytesAsync(
+            pipeName,
+            Encoding.UTF8.GetBytes("Show"));
+        var started = Stopwatch.StartNew();
+        var accepted = await transport.TrySendAsync(
+            pipeName,
+            SingleInstanceCoordinator.ShowTrayMessage,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        accepted.Should().Be(SingleInstanceSendResult.Delivered);
+        started.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(4));
+        handled.Should().Equal(SingleInstanceCoordinator.ShowTrayMessage);
+    }
+
+    [Fact]
+    public async Task Windows_transport_rejects_overlong_message_and_accepts_next_show_tray()
+    {
+        var transport = new WindowsSingleInstanceTransport();
+        var pipeName = "UniversalClipboard.test." + Guid.NewGuid().ToString("N");
+        var handled = new List<string>();
+        await using var server = transport.StartServer(
+            new SingleInstancePipeRegistration(
+                pipeName,
+                "S-1-5-21-test",
+                AllowsCurrentUserOnly: true),
+            (message, _) =>
+            {
+                handled.Add(message);
+                return ValueTask.CompletedTask;
+            });
+
+        var rejected = await transport.TrySendAsync(
+            pipeName,
+            new string('A', 65),
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+        var accepted = await transport.TrySendAsync(
+            pipeName,
+            SingleInstanceCoordinator.ShowTrayMessage,
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        rejected.Should().Be(SingleInstanceSendResult.Rejected);
+        accepted.Should().Be(SingleInstanceSendResult.Delivered);
+        handled.Should().Equal(SingleInstanceCoordinator.ShowTrayMessage);
     }
 
     [Fact]
@@ -221,6 +321,21 @@ public sealed class SingleInstanceCoordinatorTests
             transport,
             TimeProvider.System,
             onOwnerMessage);
+
+    private static async Task<NamedPipeClientStream> ConnectAndWritePipeBytesAsync(
+        string pipeName,
+        byte[] bytes)
+    {
+        var client = new NamedPipeClientStream(
+            ".",
+            pipeName,
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous);
+        await client.ConnectAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        await client.WriteAsync(bytes, CancellationToken.None);
+        await client.FlushAsync(CancellationToken.None);
+        return client;
+    }
 
     private sealed class StaticUserIdentity(string sid) : IUserIdentity
     {

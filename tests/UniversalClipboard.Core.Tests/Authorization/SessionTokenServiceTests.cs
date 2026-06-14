@@ -25,7 +25,8 @@ public sealed class SessionTokenServiceTests
         var now = new DateTimeOffset(2026, 6, 12, 8, 30, 0, TimeSpan.Zero);
         var entropy = new QueueEntropySource(
             Enumerable.Range(0, 16).Select(value => (byte)value).ToArray(),
-            Enumerable.Range(16, 32).Select(value => (byte)value).ToArray());
+            Enumerable.Range(16, 32).Select(value => (byte)value).ToArray(),
+            Enumerable.Range(48, 32).Select(value => (byte)value).ToArray());
         var service = new SessionTokenService(new ManualTimeProvider(now), entropy);
 
         var issue = service.Issue("Office browser", IPAddress.Parse("192.168.1.20"), duration);
@@ -38,7 +39,11 @@ public sealed class SessionTokenServiceTests
         issue.Authorization.TokenDigest.Should().Equal(
             SHA256.HashData(Enumerable.Range(16, 32).Select(value => (byte)value).ToArray()));
         issue.Authorization.TokenDigest.Should().HaveCount(32);
-        entropy.RequestedLengths.Should().Equal(16, 32);
+        issue.Authorization.SessionProofDigest.Should().Equal(
+            SHA256.HashData(Enumerable.Range(48, 32).Select(value => (byte)value).ToArray()));
+        issue.Authorization.SessionProofDigest.Should().HaveCount(32);
+        issue.SessionProof.Should().HaveLength(43);
+        entropy.RequestedLengths.Should().Equal(16, 32, 32);
     }
 
     [Fact]

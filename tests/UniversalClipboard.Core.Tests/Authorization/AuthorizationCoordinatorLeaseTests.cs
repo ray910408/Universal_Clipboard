@@ -17,14 +17,14 @@ public sealed class AuthorizationCoordinatorLeaseTests
         await using var coordinator = await CreateCoordinatorAsync(persistence, clock);
 
         var valid = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, validToken, IPAddress.Parse("192.168.1.20")));
+            new AcquireLeaseRequest(record.Id, validToken, IPAddress.Parse("192.168.1.20"), AuthorizationRecordFactory.ProofForByte()));
         var wrongToken = coordinator.AcquireLease(
             new AcquireLeaseRequest(
                 record.Id,
                 SessionToken.FromBytes(new byte[32]),
                 IPAddress.Parse("192.168.1.20")));
         var wrongHost = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, validToken, IPAddress.Parse("192.168.1.21")));
+            new AcquireLeaseRequest(record.Id, validToken, IPAddress.Parse("192.168.1.21"), AuthorizationRecordFactory.ProofForByte()));
 
         valid.Succeeded.Should().BeTrue();
         wrongToken.Failure.Should().Be(AuthorizationFailure.InvalidToken);
@@ -33,7 +33,7 @@ public sealed class AuthorizationCoordinatorLeaseTests
 
         clock.Advance(TimeSpan.FromHours(6));
         var expired = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, validToken, IPAddress.Parse("192.168.1.20")));
+            new AcquireLeaseRequest(record.Id, validToken, IPAddress.Parse("192.168.1.20"), AuthorizationRecordFactory.ProofForByte()));
 
         expired.Failure.Should().Be(AuthorizationFailure.Expired);
         await WaitUntilAsync(() => persistence.SaveAttempts.Count == 1);
@@ -52,9 +52,62 @@ public sealed class AuthorizationCoordinatorLeaseTests
             new ManualTimeProvider(AuthorizationRecordFactory.Now.AddDays(30)));
 
         using var lease = restarted.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease;
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease;
 
         lease.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Reloaded_authorization_requires_independent_session_proof()
+    {
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var proof = AuthorizationRecordFactory.ProofForByte();
+        var record = AuthorizationRecordFactory.Create() with { ExpiresAtUtc = null };
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+
+        await using var restarted = await CreateCoordinatorAsync(
+            persistence,
+            new ManualTimeProvider(AuthorizationRecordFactory.Now.AddDays(30)));
+
+        var cookieOnly = restarted.AcquireLease(
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback));
+        var wrongProof = restarted.AcquireLease(
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte(11)));
+        var bearerReplayedAsProof = restarted.AcquireLease(
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, token.Value));
+        var proofOnly = restarted.AcquireLease(
+            new AcquireLeaseRequest(
+                record.Id,
+                SessionToken.FromBytes(Enumerable.Repeat((byte)8, 32).ToArray()),
+                IPAddress.Loopback,
+                proof));
+        using var validLease = restarted.AcquireLease(
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, proof)).Lease;
+
+        cookieOnly.Failure.Should().Be(AuthorizationFailure.InvalidToken);
+        wrongProof.Failure.Should().Be(AuthorizationFailure.InvalidToken);
+        bearerReplayedAsProof.Failure.Should().Be(AuthorizationFailure.InvalidToken);
+        proofOnly.Failure.Should().Be(AuthorizationFailure.InvalidToken);
+        validLease.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task AcquireLease_fails_closed_when_loaded_authorization_has_no_session_proof_digest()
+    {
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var legacyRecord = AuthorizationRecordFactory.Create() with { SessionProofDigest = default };
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([legacyRecord]));
+        await using var coordinator = await CreateCoordinatorAsync(persistence);
+
+        var acquisition = coordinator.AcquireLease(
+            new AcquireLeaseRequest(
+                legacyRecord.Id,
+                token,
+                IPAddress.Loopback,
+                AuthorizationRecordFactory.ProofForByte()));
+
+        acquisition.Failure.Should().Be(AuthorizationFailure.InvalidToken);
+        acquisition.Lease.Should().BeNull();
     }
 
     [Fact]
@@ -74,13 +127,13 @@ public sealed class AuthorizationCoordinatorLeaseTests
         };
         await using var coordinator = await CreateCoordinatorAsync(persistence);
         var lease = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease!;
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease!;
 
         var revokeTask = coordinator.RevokeAsync(record.Id).AsTask();
         await WaitUntilAsync(() => lease.RevocationToken.IsCancellationRequested);
 
         coordinator.AcquireLease(
-                new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback))
+                new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte()))
             .Failure.Should().Be(AuthorizationFailure.Revoking);
         persistence.SaveAttempts.Should().BeEmpty();
         revokeTask.IsCompleted.Should().BeFalse();
@@ -109,13 +162,13 @@ public sealed class AuthorizationCoordinatorLeaseTests
         };
         await using var coordinator = await CreateCoordinatorAsync(persistence);
         var lease = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease!;
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease!;
 
         var revokeTask = coordinator.RevokeAsync(record.Id).AsTask();
         await WaitUntilAsync(() => lease.RevocationToken.IsCancellationRequested);
 
         coordinator.AcquireLease(
-                new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback))
+                new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte()))
             .Failure.Should().Be(AuthorizationFailure.Revoking);
         revokeTask.IsCompleted.Should().BeFalse();
 
@@ -125,7 +178,7 @@ public sealed class AuthorizationCoordinatorLeaseTests
         result.Failure.Should().Be(AuthorizationFailure.PersistenceFailed);
         coordinator.List().Should().Equal(AuthorizationRecordFactory.Metadata(record));
         using var restoredLease = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease;
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease;
         restoredLease.Should().NotBeNull();
     }
 
@@ -166,7 +219,7 @@ public sealed class AuthorizationCoordinatorLeaseTests
 
         await using var restarted = await CreateCoordinatorAsync(persistence);
         var acquisition = restarted.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback));
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte()));
 
         acquisition.Succeeded.Should().BeFalse();
         acquisition.Failure.Should().Be(AuthorizationFailure.NotFound);
@@ -180,7 +233,7 @@ public sealed class AuthorizationCoordinatorLeaseTests
         var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
         await using var coordinator = await CreateCoordinatorAsync(persistence);
         var lease = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease!;
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease!;
         var callbackEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         using var registration = lease.RevocationToken.Register(() =>
@@ -197,7 +250,7 @@ public sealed class AuthorizationCoordinatorLeaseTests
 
         result.Succeeded.Should().BeTrue();
         coordinator.AcquireLease(
-                new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback))
+                new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte()))
             .Failure.Should().Be(AuthorizationFailure.NotFound);
     }
 
@@ -209,7 +262,7 @@ public sealed class AuthorizationCoordinatorLeaseTests
         var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
         await using var coordinator = await CreateCoordinatorAsync(persistence);
         var lease = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease!;
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease!;
         var callbackEntered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseCallback = new ManualResetEventSlim();
@@ -245,7 +298,7 @@ public sealed class AuthorizationCoordinatorLeaseTests
         var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
         await using var coordinator = await CreateCoordinatorAsync(persistence);
         var lease = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease!;
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease!;
         var nestedSucceeded = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         using var registration = lease.RevocationToken.Register(() =>
@@ -284,7 +337,7 @@ public sealed class AuthorizationCoordinatorLeaseTests
             },
         };
         await using var coordinator = await CreateCoordinatorAsync(persistence, clock);
-        var request = new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback);
+        var request = new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte());
 
         Enumerable.Range(0, 1_000).Should().OnlyContain(_ =>
             coordinator.AcquireLease(request).Failure == AuthorizationFailure.Expired);

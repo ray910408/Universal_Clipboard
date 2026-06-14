@@ -113,7 +113,7 @@ public sealed class AuthorizationCoordinatorMutationTests
         var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
         var coordinator = await CreateCoordinatorAsync(persistence);
         var lease = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease!;
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease!;
         var revokeTask = coordinator.RevokeAsync(record.Id).AsTask();
         await WaitUntilAsync(() => lease.RevocationToken.IsCancellationRequested);
 
@@ -134,7 +134,7 @@ public sealed class AuthorizationCoordinatorMutationTests
         var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
         await using var coordinator = await CreateCoordinatorAsync(persistence);
         var lease = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease!;
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease!;
         var revokeTask = coordinator.RevokeAsync(record.Id).AsTask();
         await WaitUntilAsync(() => lease.RevocationToken.IsCancellationRequested);
         using var cancellation = new CancellationTokenSource();
@@ -162,7 +162,7 @@ public sealed class AuthorizationCoordinatorMutationTests
         var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
         await using var coordinator = await CreateCoordinatorAsync(persistence);
         var lease = coordinator.AcquireLease(
-            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback)).Lease!;
+            new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease!;
         var revokeTask = coordinator.RevokeAsync(record.Id).AsTask();
         await WaitUntilAsync(() => lease.RevocationToken.IsCancellationRequested);
 

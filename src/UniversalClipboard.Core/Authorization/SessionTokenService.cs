@@ -39,8 +39,11 @@ public sealed class SessionTokenService
 
         Span<byte> tokenBytes = stackalloc byte[TokenByteCount];
         _entropySource.Fill(tokenBytes);
+        Span<byte> proofBytes = stackalloc byte[TokenByteCount];
+        _entropySource.Fill(proofBytes);
 
         var token = SessionToken.FromBytes(tokenBytes);
+        var sessionProof = Base64Url.Encode(proofBytes);
         var createdAtUtc = _timeProvider.GetUtcNow().ToUniversalTime();
         var authorization = new AuthorizationRecord(
             new Guid(authorizationIdBytes),
@@ -48,9 +51,10 @@ public sealed class SessionTokenService
             createdAtUtc,
             boundHostIpv4,
             GetExpiry(createdAtUtc, duration),
-            ImmutableArray.Create(SHA256.HashData(tokenBytes)));
+            ImmutableArray.Create(SHA256.HashData(tokenBytes)),
+            ImmutableArray.Create(SHA256.HashData(proofBytes)));
 
-        return new SessionTokenIssue(authorization, token);
+        return new SessionTokenIssue(authorization, token, sessionProof);
     }
 
     public bool VerifyToken(AuthorizationRecord authorization, SessionToken token)
@@ -65,6 +69,26 @@ public sealed class SessionTokenService
 
         return authorization.TokenDigest.Length == digest.Length &&
             CryptographicOperations.FixedTimeEquals(authorization.TokenDigest.AsSpan(), digest);
+    }
+
+    public bool VerifySessionProof(AuthorizationRecord authorization, string sessionProof)
+    {
+        ArgumentNullException.ThrowIfNull(authorization);
+
+        Span<byte> proofBytes = stackalloc byte[TokenByteCount];
+        var base64 = sessionProof.Replace('-', '+').Replace('_', '/');
+        base64 = base64.PadRight(base64.Length + (4 - base64.Length % 4) % 4, '=');
+        if (!Convert.TryFromBase64String(base64, proofBytes, out var written) ||
+            written != TokenByteCount)
+        {
+            return false;
+        }
+
+        Span<byte> digest = stackalloc byte[SHA256.HashSizeInBytes];
+        SHA256.HashData(proofBytes, digest);
+
+        return authorization.SessionProofDigest.Length == digest.Length &&
+            CryptographicOperations.FixedTimeEquals(authorization.SessionProofDigest.AsSpan(), digest);
     }
 
     private static DateTimeOffset? GetExpiry(

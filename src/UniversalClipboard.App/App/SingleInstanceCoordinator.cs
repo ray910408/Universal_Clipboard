@@ -202,6 +202,8 @@ public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
 {
     private const string AckOk = "OK";
     private const string AckError = "ERROR";
+    private static readonly TimeSpan PipeReadTimeout = TimeSpan.FromSeconds(2);
+    private const int MaximumPipeMessageLength = 64;
 
     public ISingleInstancePipeServer StartServer(
         SingleInstancePipeRegistration registration,
@@ -303,8 +305,12 @@ public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
                     {
                         AutoFlush = true,
                     };
-                    var message = await reader.ReadLineAsync(_shutdown.Token).ConfigureAwait(false);
-                    if (message is not null)
+                    var message = await ReadBoundedLineAsync(
+                        reader,
+                        PipeReadTimeout,
+                        _shutdown.Token).ConfigureAwait(false);
+                    if (message is not null &&
+                        string.Equals(message, SingleInstanceCoordinator.ShowTrayMessage, StringComparison.Ordinal))
                     {
                         try
                         {
@@ -320,16 +326,61 @@ public sealed class WindowsSingleInstanceTransport : ISingleInstanceTransport
                             await writer.WriteLineAsync(AckError.AsMemory(), _shutdown.Token).ConfigureAwait(false);
                         }
                     }
+                    else
+                    {
+                        await writer.WriteLineAsync(AckError.AsMemory(), _shutdown.Token).ConfigureAwait(false);
+                    }
                 }
                 catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
                 {
                     return;
+                }
+                catch (OperationCanceledException)
+                {
                 }
                 catch (IOException)
                 {
                 }
                 catch (UnauthorizedAccessException)
                 {
+                }
+            }
+        }
+
+        private static async Task<string?> ReadBoundedLineAsync(
+            StreamReader reader,
+            TimeSpan timeout,
+            CancellationToken cancellationToken)
+        {
+            using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(timeout);
+            var buffer = new char[MaximumPipeMessageLength + 1];
+            var length = 0;
+            while (true)
+            {
+                var charsRead = await reader.ReadAsync(
+                    buffer.AsMemory(length, 1),
+                    timeoutSource.Token).ConfigureAwait(false);
+                if (charsRead == 0)
+                {
+                    return length == 0 ? null : new string(buffer, 0, length);
+                }
+
+                var character = buffer[length];
+                if (character == '\n')
+                {
+                    if (length > 0 && buffer[length - 1] == '\r')
+                    {
+                        length--;
+                    }
+
+                    return new string(buffer, 0, length);
+                }
+
+                length++;
+                if (length > MaximumPipeMessageLength)
+                {
+                    return null;
                 }
             }
         }

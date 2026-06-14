@@ -845,7 +845,7 @@ public sealed class NetworkCoordinator
         exception.Message.Contains("address", StringComparison.OrdinalIgnoreCase);
 
     private static string BuildUrl(IPAddress address) =>
-        $"http://{address}:{LocalWebHost.Port}/";
+        $"https://{address}:{LocalWebHost.Port}/";
 
     private NetworkSharingState Publish(NetworkSharingState state)
     {

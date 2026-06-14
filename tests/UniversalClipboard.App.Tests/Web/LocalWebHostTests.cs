@@ -81,10 +81,11 @@ public sealed class LocalWebHostTests
         cookie.Should().Contain("samesite=strict");
         cookie.Should().Contain("path=/clip-api");
         cookie.Should().Contain("max-age=18000");
-        cookie.Should().NotContain("secure");
+        cookie.Should().Contain("secure");
         var json = await ReadJsonAsync(response);
         json.RootElement.GetProperty("authorized").GetBoolean().Should().BeTrue();
         json.RootElement.GetProperty("authorizationId").GetString().Should().HaveLength(22);
+        json.RootElement.GetProperty("sessionProof").GetString().Should().HaveLength(43);
         json.RootElement.GetProperty("expiresAt").ValueKind.Should().Be(JsonValueKind.String);
         fixture.Coordinator.List().Single().Label.Should().Be("My iPhone");
     }
@@ -283,6 +284,205 @@ public sealed class LocalWebHostTests
     }
 
     [Fact]
+    public async Task Clips_rejects_stolen_cookie_without_session_proof_header()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var session = await fixture.PairAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/clip-api/clips");
+        request.Headers.Add("Cookie", session.Cookie);
+
+        var response = await fixture.Client.SendAsync(request);
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+    }
+
+    [Fact]
+    public async Task Clips_rejects_wrong_session_proof_for_valid_cookie()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var session = await fixture.PairAsync();
+
+        var response = await fixture.GetClipsAsync(session with { Proof = "wrong-proof" });
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+    }
+
+    [Fact]
+    public async Task Clips_rejects_stolen_authorization_token_replayed_as_proof()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var session = await fixture.PairAsync();
+        var bearer = session.Cookie["clip_session=".Length..];
+
+        var response = await fixture.GetClipsAsync(session with { Proof = bearer });
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+    }
+
+    [Fact]
+    public async Task Clips_rejects_session_proof_without_cookie()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var session = await fixture.PairAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/clip-api/clips");
+        request.Headers.Add("X-Clip-Session", session.Proof);
+
+        var response = await fixture.Client.SendAsync(request);
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+    }
+
+    [Fact]
+    public async Task Clips_rejects_invalid_token_cookie_and_expires_session_cookie()
+    {
+        var authorizationId = Guid.Parse("c7439162-df34-4c76-9cc7-9cffd158f8e4");
+        var record = AuthorizationTestFactory.CreateRecord(authorizationId, tokenByte: 9);
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+        await using var fixture = await HostFixture.StartAsync(persistence: persistence);
+        var cookie = CreateSessionCookie(authorizationId, tokenByte: 8);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/clip-api/clips");
+        AddSession(request, new SessionPair(cookie, "wrong-proof"));
+        var response = await fixture.Client.SendAsync(request);
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+    }
+
+    [Fact]
+    public async Task Clips_rejects_revoked_token_after_durable_revoke()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var session = await fixture.PairAsync();
+        var authorizationId = fixture.Coordinator.List().Single().Id;
+        (await fixture.Coordinator.RevokeAsync(authorizationId)).Succeeded.Should().BeTrue();
+
+        var response = await fixture.GetClipsAsync(session);
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+    }
+
+    [Fact]
+    public async Task Clips_rejects_expired_token_and_removes_stale_authorization()
+    {
+        await using var fixture = await HostFixture.StartAsync(
+            pairingDuration: AuthorizationDuration.OneHour);
+        var session = await fixture.PairAsync();
+        fixture.Clock.Advance(TimeSpan.FromHours(1));
+
+        var response = await fixture.GetClipsAsync(session);
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+        await WaitUntilAsync(() => fixture.Coordinator.List().IsEmpty);
+    }
+
+    [Fact]
+    public async Task Clips_rejects_session_bound_to_a_different_local_ipv4()
+    {
+        var authorizationId = Guid.Parse("5e459bc0-c2f1-47ab-903f-17fe81c5b4bc");
+        var record = AuthorizationTestFactory.CreateRecord(authorizationId, tokenByte: 9)
+            with { BoundHostIpv4 = IPAddress.Parse("127.0.0.2") };
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+        await using var fixture = await HostFixture.StartAsync(persistence: persistence);
+        var cookie = CreateSessionCookie(authorizationId, tokenByte: 9);
+
+        var response = await fixture.GetClipsAsync(new SessionPair(cookie, "wrong-proof"));
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+    }
+
+    [Fact]
+    public async Task Browser_origin_header_does_not_get_cors_grant_for_clip_api()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        fixture.History.Add("same-origin readable only");
+        var session = await fixture.PairAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/clip-api/clips");
+        AddSession(request, session);
+        request.Headers.Add("Origin", "https://attacker.example");
+
+        var response = await fixture.Client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Headers.TryGetValues("Access-Control-Allow-Origin", out _).Should().BeFalse();
+        AssertSecurityHeaders(response);
+    }
+
+    [Fact]
+    public async Task Cors_preflight_to_clip_api_is_not_granted()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Options, "/clip-api/clips");
+        request.Headers.Add("Origin", "https://attacker.example");
+        request.Headers.Add("Access-Control-Request-Method", "GET");
+
+        var response = await fixture.Client.SendAsync(request);
+
+        await AssertErrorAsync(response, HttpStatusCode.MethodNotAllowed, "method_not_allowed");
+        response.Headers.TryGetValues("Access-Control-Allow-Origin", out _).Should().BeFalse();
+        response.Headers.TryGetValues("Access-Control-Allow-Credentials", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Pair_exchange_rejects_cross_origin_browser_form_before_content_type()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/clip-api/pair/exchange")
+        {
+            Content = new StringContent(
+                "code=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY&label=Phone",
+                Encoding.UTF8,
+                "application/x-www-form-urlencoded"),
+        };
+        request.Headers.Add("Origin", "https://attacker.example");
+
+        var response = await fixture.Client.SendAsync(request);
+
+        await AssertErrorAsync(
+            response,
+            HttpStatusCode.Forbidden,
+            "cross_origin_denied");
+        response.Headers.TryGetValues("Access-Control-Allow-Origin", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Pair_exchange_cross_origin_form_posts_do_not_consume_pairing_rate_limit()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        const string nonexistentCode = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY";
+
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/clip-api/pair/exchange")
+            {
+                Content = new StringContent(
+                    "code=" + nonexistentCode + "&label=Phone",
+                    Encoding.UTF8,
+                    "application/x-www-form-urlencoded"),
+            };
+            request.Headers.Add("Origin", "https://attacker.example");
+
+            var response = await fixture.Client.SendAsync(request);
+
+            await AssertErrorAsync(
+                response,
+                HttpStatusCode.Forbidden,
+                "cross_origin_denied");
+        }
+
+        var json = await fixture.PostPairAsync(nonexistentCode, "Phone");
+
+        await AssertErrorAsync(json, HttpStatusCode.Unauthorized, "pairing_failed");
+    }
+
+    [Fact]
     public async Task Pairing_401_also_clears_an_existing_api_cookie()
     {
         await using var fixture = await HostFixture.StartAsync();
@@ -316,9 +516,9 @@ public sealed class LocalWebHostTests
                 Guid.Parse("59d94a29-4b1c-4f85-a786-4aef41cc02cd"),
                 AuthorizationTestFactory.Now,
                 "exact clipboard text"));
-        var cookie = await fixture.PairAndGetCookieAsync();
+        var session = await fixture.PairAsync();
 
-        var initial = await fixture.GetClipsAsync(cookie);
+        var initial = await fixture.GetClipsAsync(session);
         initial.StatusCode.Should().Be(HttpStatusCode.OK);
         var json = await ReadJsonAsync(initial);
         var instance = json.RootElement.GetProperty("instanceId").GetString();
@@ -326,18 +526,18 @@ public sealed class LocalWebHostTests
         json.RootElement.GetProperty("items")[0].GetProperty("text").GetString()
             .Should().Be("exact clipboard text");
 
-        var unchanged = await fixture.GetClipsAsync(cookie, instance, version);
+        var unchanged = await fixture.GetClipsAsync(session, instance, version);
         unchanged.StatusCode.Should().Be(HttpStatusCode.NoContent);
         (await unchanged.Content.ReadAsByteArrayAsync()).Should().BeEmpty();
         AssertSecurityHeaders(unchanged);
 
         fixture.Clock.Advance(TimeSpan.FromSeconds(1));
-        var future = await fixture.GetClipsAsync(cookie, instance, version + 100);
+        var future = await fixture.GetClipsAsync(session, instance, version + 100);
         future.StatusCode.Should().Be(HttpStatusCode.OK);
 
         fixture.Clock.Advance(TimeSpan.FromSeconds(1));
         var different = await fixture.GetClipsAsync(
-            cookie,
+            session,
             Convert.ToBase64String(Guid.NewGuid().ToByteArray())
                 .TrimEnd('=').Replace('+', '-').Replace('/', '_'),
             version);
@@ -353,9 +553,9 @@ public sealed class LocalWebHostTests
     public async Task Clips_reject_invalid_query_pairs(string query)
     {
         await using var fixture = await HostFixture.StartAsync();
-        var cookie = await fixture.PairAndGetCookieAsync();
+        var session = await fixture.PairAsync();
 
-        var response = await fixture.GetClipsRawAsync(cookie, query);
+        var response = await fixture.GetClipsRawAsync(session, query);
 
         await AssertErrorAsync(response, HttpStatusCode.BadRequest, "invalid_request");
     }
@@ -364,11 +564,11 @@ public sealed class LocalWebHostTests
     public async Task Clips_are_limited_to_two_requests_per_second_per_authorization()
     {
         await using var fixture = await HostFixture.StartAsync();
-        var cookie = await fixture.PairAndGetCookieAsync();
+        var session = await fixture.PairAsync();
 
-        (await fixture.GetClipsAsync(cookie)).StatusCode.Should().Be(HttpStatusCode.OK);
-        (await fixture.GetClipsAsync(cookie)).StatusCode.Should().Be(HttpStatusCode.OK);
-        var limited = await fixture.GetClipsAsync(cookie);
+        (await fixture.GetClipsAsync(session)).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await fixture.GetClipsAsync(session)).StatusCode.Should().Be(HttpStatusCode.OK);
+        var limited = await fixture.GetClipsAsync(session);
 
         await AssertErrorAsync(limited, HttpStatusCode.TooManyRequests, "rate_limited");
         limited.Headers.GetValues("Retry-After").Single().Should().Be("1");
@@ -420,7 +620,8 @@ public sealed class LocalWebHostTests
         var code = fixture.PairingCodes.Create().Value;
         var response = await fixture.PostPairAsync(code, "masked preview");
         var cookie = HostFixture.GetCookie(response);
-        await fixture.GetClipsAsync(cookie);
+        var proof = (await ReadJsonAsync(response)).RootElement.GetProperty("sessionProof").GetString()!;
+        await fixture.GetClipsAsync(new SessionPair(cookie, proof));
 
         var combined = string.Join("\n", logger.Messages);
         combined.Should().Contain("/clip-api/pair/exchange");
@@ -451,11 +652,11 @@ public sealed class LocalWebHostTests
         var writer = new BlockingClipResponseWriter();
         await using var fixture = await HostFixture.StartAsync(responseWriter: writer);
         fixture.History.Add("must not complete after revoke");
-        var cookie = await fixture.PairAndGetCookieAsync();
+        var session = await fixture.PairAsync();
         var authorizationId = fixture.Coordinator.List().Single().Id;
 
         var responseTask = fixture.GetClipsAsync(
-            cookie,
+            session,
             completionOption: HttpCompletionOption.ResponseHeadersRead);
         await writer.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -482,9 +683,9 @@ public sealed class LocalWebHostTests
                 TimeSpan.FromMilliseconds(75),
                 TimeSpan.FromMilliseconds(250)));
         fixture.History.Add("active response");
-        var cookie = await fixture.PairAndGetCookieAsync();
+        var session = await fixture.PairAsync();
         var request = fixture.GetClipsAsync(
-            cookie,
+            session,
             completionOption: HttpCompletionOption.ResponseHeadersRead);
         await writer.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -513,9 +714,9 @@ public sealed class LocalWebHostTests
                 TimeSpan.FromMilliseconds(25),
                 TimeSpan.FromMilliseconds(25)));
         fixture.History.Add("active response");
-        var cookie = await fixture.PairAndGetCookieAsync();
+        var session = await fixture.PairAsync();
         var request = fixture.GetClipsAsync(
-            cookie,
+            session,
             completionOption: HttpCompletionOption.ResponseHeadersRead);
         await writer.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -600,7 +801,8 @@ public sealed class LocalWebHostTests
             new AcquireLeaseRequest(
                 authorizationId,
                 SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray()),
-                IPAddress.Loopback)).Lease!;
+                IPAddress.Loopback,
+                AuthorizationTestFactory.CreateProof())).Lease!;
         var revokeTask = fixture.Coordinator.RevokeAsync(authorizationId).AsTask();
         await WaitUntilAsync(() => lease.RevocationToken.IsCancellationRequested);
 
@@ -631,6 +833,23 @@ public sealed class LocalWebHostTests
 
     private static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response) =>
         JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync());
+
+    private static string CreateSessionCookie(Guid authorizationId, byte tokenByte) =>
+        "clip_session=" +
+        Convert.ToBase64String(authorizationId.ToByteArray())
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_') +
+        "." +
+        SessionToken.FromBytes(Enumerable.Repeat(tokenByte, 32).ToArray()).Value;
+
+    private sealed record SessionPair(string Cookie, string Proof);
+
+    private static void AddSession(HttpRequestMessage request, SessionPair session)
+    {
+        request.Headers.Add("Cookie", session.Cookie);
+        request.Headers.Add("X-Clip-Session", session.Proof);
+    }
 
     private static async Task AssertErrorAsync(
         HttpResponseMessage response,
@@ -670,9 +889,13 @@ public sealed class LocalWebHostTests
             PairingCodes = pairingCodes;
             History = history;
             Clock = clock;
-            Client = new HttpClient
+            Client = new HttpClient(new HttpClientHandler
             {
-                BaseAddress = new Uri("http://127.0.0.1:43127"),
+                ServerCertificateCustomValidationCallback =
+                    HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+            })
+            {
+                BaseAddress = new Uri("https://127.0.0.1:43127"),
                 Timeout = TimeSpan.FromSeconds(5),
             };
         }
@@ -753,15 +976,16 @@ public sealed class LocalWebHostTests
                 "/clip-api/pair/exchange",
                 JsonContent.Create(new { code, label }));
 
-        public async Task<string> PairAndGetCookieAsync()
+        public async Task<SessionPair> PairAsync()
         {
             var response = await PostPairAsync(PairingCodes.Create().Value, "Phone");
             response.EnsureSuccessStatusCode();
-            return GetCookie(response);
+            var proof = (await ReadJsonAsync(response)).RootElement.GetProperty("sessionProof").GetString()!;
+            return new SessionPair(GetCookie(response), proof);
         }
 
         public Task<HttpResponseMessage> GetClipsAsync(
-            string cookie,
+            SessionPair session,
             string? instance = null,
             ulong? since = null,
             HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
@@ -769,16 +993,16 @@ public sealed class LocalWebHostTests
             var query = instance is null
                 ? ""
                 : $"?instance={Uri.EscapeDataString(instance)}&since={since}";
-            return GetClipsRawAsync(cookie, query, completionOption);
+            return GetClipsRawAsync(session, query, completionOption);
         }
 
         public Task<HttpResponseMessage> GetClipsRawAsync(
-            string cookie,
+            SessionPair session,
             string query,
             HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
         {
             var request = new HttpRequestMessage(HttpMethod.Get, "/clip-api/clips" + query);
-            request.Headers.Add("Cookie", cookie);
+            AddSession(request, session);
             return Client.SendAsync(request, completionOption);
         }
 

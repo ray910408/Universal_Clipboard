@@ -89,6 +89,33 @@ public sealed class SensitiveTextClassifier
 
     private static bool ContainsGitHubToken(string text)
     {
+        const string fineGrainedPrefix = "github_pat_";
+        var fineGrainedIndex = text.IndexOf(fineGrainedPrefix, StringComparison.Ordinal);
+        while (fineGrainedIndex >= 0)
+        {
+            var payloadStart = fineGrainedIndex + fineGrainedPrefix.Length;
+            var payloadEnd = payloadStart;
+            while (payloadEnd < text.Length && IsGitHubFineGrainedTokenCharacter(text[payloadEnd]))
+            {
+                payloadEnd++;
+            }
+
+            // GitHub fine-grained PATs use multiple underscore-delimited base62-ish
+            // segments and are substantially longer than classic gh[pousr]_ tokens.
+            // Require at least one delimiter in the payload to avoid classifying prose
+            // that merely mentions the prefix.
+            var payload = text.AsSpan(payloadStart, payloadEnd - payloadStart);
+            if (payload.Length is >= 40 and <= 255 && payload.Contains('_'))
+            {
+                return true;
+            }
+
+            fineGrainedIndex = text.IndexOf(
+                fineGrainedPrefix,
+                Math.Max(payloadEnd, fineGrainedIndex + 1),
+                StringComparison.Ordinal);
+        }
+
         for (var index = 0; index + 4 <= text.Length; index++)
         {
             if (text[index] != 'g'
@@ -118,13 +145,11 @@ public sealed class SensitiveTextClassifier
     private static bool ContainsAwsAccessKey(string text)
     {
         const int keyLength = 20;
+        ReadOnlySpan<string> prefixes = ["AKIA", "ASIA"];
 
         for (var index = 0; index + keyLength <= text.Length; index++)
         {
-            if (text[index] != 'A'
-                || text[index + 1] != 'K'
-                || text[index + 2] != 'I'
-                || text[index + 3] != 'A')
+            if (!HasAnyPrefix(text, index, prefixes))
             {
                 continue;
             }
@@ -152,6 +177,23 @@ public sealed class SensitiveTextClassifier
 
     private static bool IsGitHubKind(char value) =>
         value is 'p' or 'o' or 'u' or 's' or 'r';
+
+    private static bool IsGitHubFineGrainedTokenCharacter(char value) =>
+        IsAsciiAlphaNumeric(value) || value == '_';
+
+    private static bool HasAnyPrefix(string text, int index, ReadOnlySpan<string> prefixes)
+    {
+        foreach (var prefix in prefixes)
+        {
+            if (index + prefix.Length <= text.Length &&
+                text.AsSpan(index, prefix.Length).SequenceEqual(prefix))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static bool IsAsciiAlphaNumeric(char value) =>
         value is >= '0' and <= '9'

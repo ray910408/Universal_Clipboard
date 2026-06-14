@@ -237,7 +237,7 @@ public sealed class NetworkCoordinatorTests
 
         var state = await fixture.Coordinator.StartAsync();
 
-        state.SelectedUrl.Should().Be("http://192.168.1.5:43127/");
+        state.SelectedUrl.Should().Be("https://192.168.1.5:43127/");
         state.SelectedNetworkProfile.Should().Be(NetworkProfile.Private);
         state.IsPortListening.Should().BeTrue();
         state.FirewallRuleStatus.Should().Be(FirewallRuleStatus.Unknown);

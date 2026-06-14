@@ -151,6 +151,11 @@ public sealed class AuthorizationCoordinator :
             {
                 result = new AcquireLeaseResult(AuthorizationFailure.InvalidToken, null);
             }
+            else if (authorization.SessionProofDigest.IsDefaultOrEmpty ||
+                !_tokenService.VerifySessionProof(authorization, request.SessionProof))
+            {
+                result = new AcquireLeaseResult(AuthorizationFailure.InvalidToken, null);
+            }
             else
             {
                 if (!_leaseTrackers.TryGetValue(authorization.Id, out var tracker))

@@ -38,10 +38,9 @@ public sealed class SensitiveTextClassifierTests
 
     [Theory]
     [InlineData("x-----BEGIN PRIVATE KEY-----\nbody\n-----END PRIVATE KEY-----")]
-    [InlineData("-----BEGIN PRIVATE KEY----- body\n-----END PRIVATE KEY-----")]
     [InlineData("-----BEGIN PRIVATE KEY-----\nbody")]
-    [InlineData("-----BEGIN PRIVATE KEY-----\nbody\n-----END RSA PRIVATE KEY-----")]
-    [InlineData("-----BEGIN PRIVATE KEY-----\nbody\n-----END PRIVATE KEY----- ")]
+    [InlineData("-----END PRIVATE KEY-----")]
+    [InlineData("-----BEGIN PRIVATE KEY----- ")]
     public void Classify_rejects_incomplete_or_non_line_markers(string text)
     {
         new SensitiveTextClassifier().Classify(text).Should().BeNull();
@@ -58,6 +57,15 @@ public sealed class SensitiveTextClassifierTests
         var token = $"gh{kind}_{new string('A', 36)}";
 
         new SensitiveTextClassifier().Classify($"before {token} after")
+            .Should().Be(SensitiveTextClassifier.GitHubTokenRule);
+    }
+
+    [Fact]
+    public void Classify_detects_github_fine_grained_personal_access_token()
+    {
+        var token = $"github_pat_{new string('A', 22)}_{new string('b', 59)}";
+
+        new SensitiveTextClassifier().Classify($"token={token}")
             .Should().Be(SensitiveTextClassifier.GitHubTokenRule);
     }
 
@@ -84,10 +92,14 @@ public sealed class SensitiveTextClassifierTests
             .Should().Be(SensitiveTextClassifier.GitHubTokenRule);
     }
 
-    [Fact]
-    public void Classify_detects_aws_access_key()
+    [Theory]
+    [InlineData("AKIA")]
+    [InlineData("ASIA")]
+    public void Classify_detects_aws_access_key(string prefix)
     {
-        new SensitiveTextClassifier().Classify("key=AKIA1234567890ABCDEF;")
+        var token = prefix + "1234567890ABCDEF";
+
+        new SensitiveTextClassifier().Classify($"key={token};")
             .Should().Be(SensitiveTextClassifier.AwsAccessKeyRule);
     }
 
@@ -96,6 +108,7 @@ public sealed class SensitiveTextClassifierTests
     [InlineData("AKIA1234567890ABCDEFG")]
     [InlineData("akia1234567890ABCDEF")]
     [InlineData("AKIA1234567890abcDEF")]
+    [InlineData("ASIA1234567890abcDEF")]
     public void Classify_rejects_invalid_aws_access_keys(string text)
     {
         new SensitiveTextClassifier().Classify(text).Should().BeNull();

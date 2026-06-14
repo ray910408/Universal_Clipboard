@@ -26,6 +26,12 @@ internal sealed class QueueEntropySource(params byte[][] values) : IEntropySourc
     public void Fill(Span<byte> destination)
     {
         _requestedLengths.Add(destination.Length);
+        if (_values.Count == 0)
+        {
+            destination.Clear();
+            return;
+        }
+
         var value = _values.Dequeue();
         value.Length.Should().Be(destination.Length);
         value.CopyTo(destination);
@@ -77,17 +83,26 @@ internal static class AuthorizationRecordFactory
         string label = "Existing browser",
         IPAddress? boundHostIpv4 = null,
         DateTimeOffset? expiresAtUtc = null,
-        byte tokenByte = 9)
+        byte tokenByte = 9,
+        byte proofByte = 10)
     {
         var tokenBytes = Enumerable.Repeat(tokenByte, SessionTokenService.TokenByteCount).ToArray();
+        var proofBytes = Enumerable.Repeat(proofByte, SessionTokenService.TokenByteCount).ToArray();
         return new AuthorizationRecord(
             id ?? Guid.NewGuid(),
             label,
             Now,
             boundHostIpv4 ?? IPAddress.Loopback,
             expiresAtUtc ?? Now.AddHours(5),
-            ImmutableArray.Create(SHA256.HashData(tokenBytes)));
+            ImmutableArray.Create(SHA256.HashData(tokenBytes)),
+            ImmutableArray.Create(SHA256.HashData(proofBytes)));
     }
+
+    public static string ProofForByte(byte proofByte = 10) =>
+        Convert.ToBase64String(Enumerable.Repeat(proofByte, SessionTokenService.TokenByteCount).ToArray())
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
 
     public static AuthorizationMetadata Metadata(AuthorizationRecord authorization) =>
         new(

@@ -51,10 +51,16 @@ cloud database, no iPhone app, and no application-managed clipboard archive on d
 - Pairing authorization persists across Windows restarts; clipboard content does not.
 - `Permanent` means no server-side expiry until revoked. Safari may remove its cookie
   and require pairing again.
-- The baseline Safari copy path over HTTP is manual copy from visibly selected text.
-  Direct one-tap copy is an opportunistic enhancement, not a release dependency.
-- The MVP does not provide transport confidentiality or integrity. Pairing controls
-  application access but cannot prevent same-network HTTP interception or tampering.
+- The baseline Safari copy path is manual copy from visibly selected text. Direct
+  one-tap copy is an opportunistic enhancement, not a release dependency.
+- The MVP serves the local page over an ephemeral self-signed HTTPS certificate only
+  to avoid passive LAN sniffing during a short-lived local session. This is not a
+  full local trust model: it has no private CA installation, persisted certificate
+  pinning, or first-use fingerprint verification, so it does not by itself defeat an
+  active same-network first-use MITM. The compensating MVP controls are private-Wi-Fi
+  scope, one-time pairing codes, host/IP-bound HttpOnly cookies, independent
+  same-origin session proof headers, no CORS grant, rate limits, and clear release
+  notes that Ray must approve before local use.
 
 ## Premises
 
@@ -83,16 +89,18 @@ prototype to the MVP.
 
 The opposing case identified five primary risks:
 
-1. HTTP session credentials and clipboard content can be intercepted.
-2. Safari one-tap copy is unreliable on an insecure origin.
+1. Local session credentials and clipboard content can still be intercepted or
+   tampered with by an active same-network attacker during first-use certificate
+   acceptance.
+2. Safari one-tap copy may be unreliable if the local certificate is not trusted.
 3. Sensitive-content rules can create false confidence.
 4. Firewall, VPN, guest Wi-Fi, and client isolation can prevent LAN access.
 5. Pairing, tray UI, clipboard events, and browser fallback can already exceed a
    weekend if the scope expands.
 
-The conclusion was `GO WITH CHANGES`: keep the HTTP MVP, state its limits precisely,
-use single-use pairing codes, make manual copy reliable, and treat scope control as a
-release requirement.
+The conclusion was `GO WITH CHANGES`: keep the local-network MVP, state its trust
+limits precisely, use single-use pairing codes, make manual copy reliable, and treat
+scope control as a release requirement.
 
 ## Approaches Considered
 
@@ -324,8 +332,15 @@ the person viewing the QR code.
 - Digest comparison uses fixed-time comparison.
 - The token is stored in a host-scoped `clip_session` cookie. The `Domain` attribute
   is omitted.
-- Cookie attributes are `HttpOnly`, `SameSite=Strict`, and `Path=/clip-api`.
-- `Secure` cannot be used by the HTTP MVP and the pairing screen states this.
+- Cookie attributes are `HttpOnly`, `Secure`, `SameSite=Strict`, and
+  `Path=/clip-api`.
+- Pair exchange also returns an independent random session proof. The browser keeps
+  that proof in `sessionStorage` and sends it as `X-Clip-Session`; the server stores
+  only its digest with the authorization record and requires both the HttpOnly bearer
+  cookie and this proof for clipboard reads. The proof is deliberately not the bearer
+  token, so
+  cookie-only requests, wrong proofs, replaying the cookie value as the proof, and
+  proof-only requests are unauthorized.
 - Cookies do not isolate TCP ports. A different HTTP service on the same IP can
   receive the cookie for matching `/clip-api` paths. The unusual path reduces
   accidental exposure but does not remove this HTTP risk.

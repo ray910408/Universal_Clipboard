@@ -9,7 +9,8 @@ namespace UniversalClipboard.App.Security;
 
 public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
 {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
+    private const int LegacySchemaVersion = 1;
     private const int MaximumDocumentBytes = 4 * 1024 * 1024;
     private static readonly byte[] OptionalEntropy =
         "UniversalClipboard.Authorization.v1"u8.ToArray();
@@ -127,9 +128,12 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
         writer.Write(SchemaVersion);
-        writer.Write(document.Authorizations.Length);
+        var authorizations = document.Authorizations
+            .Where(authorization => !authorization.SessionProofDigest.IsDefaultOrEmpty)
+            .ToArray();
+        writer.Write(authorizations.Length);
 
-        foreach (var authorization in document.Authorizations)
+        foreach (var authorization in authorizations)
         {
             writer.Write(authorization.Id.ToByteArray());
             writer.Write(authorization.Label);
@@ -143,6 +147,8 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
 
             writer.Write(authorization.TokenDigest.Length);
             writer.Write(authorization.TokenDigest.AsSpan());
+            writer.Write(authorization.SessionProofDigest.Length);
+            writer.Write(authorization.SessionProofDigest.AsSpan());
         }
 
         writer.Flush();
@@ -158,7 +164,8 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
 
         using var stream = new MemoryStream(plaintext, writable: false);
         using var reader = new BinaryReader(stream);
-        if (reader.ReadInt32() != SchemaVersion)
+        var version = reader.ReadInt32();
+        if (version is not SchemaVersion and not LegacySchemaVersion)
         {
             throw new InvalidDataException("Unknown authorization schema.");
         }
@@ -184,6 +191,18 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
                 throw new InvalidDataException("Invalid token digest length.");
             }
 
+            var tokenDigest = ImmutableArray.Create(ReadExact(reader, digestLength));
+            if (version == LegacySchemaVersion)
+            {
+                continue;
+            }
+
+            var proofDigestLength = reader.ReadInt32();
+            if (proofDigestLength != SHA256.HashSizeInBytes)
+            {
+                throw new InvalidDataException("Invalid session proof digest length.");
+            }
+
             authorizations.Add(
                 new AuthorizationRecord(
                     id,
@@ -191,7 +210,8 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
                     createdAtUtc,
                     boundAddress,
                     expiresAtUtc,
-                    ImmutableArray.Create(ReadExact(reader, digestLength))));
+                    tokenDigest,
+                    ImmutableArray.Create(ReadExact(reader, proofDigestLength))));
         }
 
         if (stream.Position != stream.Length)

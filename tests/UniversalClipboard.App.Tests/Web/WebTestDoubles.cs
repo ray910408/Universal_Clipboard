@@ -130,17 +130,26 @@ internal static class AuthorizationTestFactory
     public static AuthorizationRecord CreateRecord(
         Guid id,
         byte tokenByte,
-        DateTimeOffset? expiresAtUtc = null)
+        DateTimeOffset? expiresAtUtc = null,
+        byte proofByte = 10)
     {
-        var token = SessionToken.FromBytes(Enumerable.Repeat(tokenByte, 32).ToArray());
         var digest = System.Security.Cryptography.SHA256.HashData(
             Enumerable.Repeat(tokenByte, 32).ToArray());
+        var proofDigest = System.Security.Cryptography.SHA256.HashData(
+            Enumerable.Repeat(proofByte, 32).ToArray());
         return new AuthorizationRecord(
             id,
             "Existing browser",
             Now,
             IPAddress.Loopback,
             expiresAtUtc ?? Now.AddHours(5),
-            ImmutableArray.Create(digest));
+            ImmutableArray.Create(digest),
+            ImmutableArray.Create(proofDigest));
     }
+
+    public static string CreateProof(byte proofByte = 10) =>
+        Convert.ToBase64String(Enumerable.Repeat(proofByte, 32).ToArray())
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
 }

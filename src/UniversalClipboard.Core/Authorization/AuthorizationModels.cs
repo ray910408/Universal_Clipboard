@@ -18,7 +18,8 @@ public sealed record AuthorizationRecord(
     DateTimeOffset CreatedAtUtc,
     IPAddress BoundHostIpv4,
     DateTimeOffset? ExpiresAtUtc,
-    ImmutableArray<byte> TokenDigest);
+    ImmutableArray<byte> TokenDigest,
+    ImmutableArray<byte> SessionProofDigest = default);
 
 public sealed record AuthorizationDocument(
     ImmutableArray<AuthorizationRecord> Authorizations)
@@ -81,11 +82,13 @@ public sealed class ExchangeAuthorizationResult
     private ExchangeAuthorizationResult(
         AuthorizationFailure failure,
         AuthorizationMetadata? authorization,
-        SessionToken? token)
+        SessionToken? token,
+        string? sessionProof)
     {
         Failure = failure;
         Authorization = authorization;
         Token = token;
+        SessionProof = sessionProof;
     }
 
     public bool Succeeded => Failure == AuthorizationFailure.None;
@@ -96,14 +99,17 @@ public sealed class ExchangeAuthorizationResult
 
     public SessionToken? Token { get; }
 
+    public string? SessionProof { get; }
+
     internal static ExchangeAuthorizationResult Success(SessionTokenIssue issue) =>
         new(
             AuthorizationFailure.None,
             AuthorizationMetadata.FromRecord(issue.Authorization),
-            issue.Token);
+            issue.Token,
+            issue.SessionProof);
 
     internal static ExchangeAuthorizationResult Failed(AuthorizationFailure failure) =>
-        new(failure, null, null);
+        new(failure, null, null, null);
 
     public override string ToString() =>
         $"{nameof(ExchangeAuthorizationResult)} {{ Succeeded = {Succeeded}, Failure = {Failure}, " +
@@ -113,7 +119,8 @@ public sealed class ExchangeAuthorizationResult
 public sealed record AcquireLeaseRequest(
     Guid AuthorizationId,
     SessionToken Token,
-    IPAddress HostIpv4);
+    IPAddress HostIpv4,
+    string SessionProof = "");
 
 public sealed class AcquireLeaseResult
 {
@@ -246,18 +253,24 @@ public sealed class SessionToken
 
 public sealed class SessionTokenIssue
 {
-    internal SessionTokenIssue(AuthorizationRecord authorization, SessionToken token)
+    internal SessionTokenIssue(
+        AuthorizationRecord authorization,
+        SessionToken token,
+        string sessionProof)
     {
         Authorization = authorization;
         Token = token;
+        SessionProof = sessionProof;
     }
 
     public AuthorizationRecord Authorization { get; }
 
     public SessionToken Token { get; }
 
+    public string SessionProof { get; }
+
     public override string ToString() =>
-        $"{nameof(SessionTokenIssue)} {{ AuthorizationId = {Authorization.Id}, Token = [REDACTED] }}";
+        $"{nameof(SessionTokenIssue)} {{ AuthorizationId = {Authorization.Id}, Token = [REDACTED], SessionProof = [REDACTED] }}";
 }
 
 internal static class Base64Url

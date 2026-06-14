@@ -9,7 +9,8 @@ internal sealed record PairExchangeRequest(
 public sealed record PairExchangeResponse(
     bool Authorized,
     string AuthorizationId,
-    DateTimeOffset? ExpiresAt);
+    DateTimeOffset? ExpiresAt,
+    string SessionProof);
 
 public sealed record ClipItemResponse(
     string Id,

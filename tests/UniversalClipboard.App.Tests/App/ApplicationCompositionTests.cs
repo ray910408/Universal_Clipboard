@@ -24,14 +24,14 @@ public sealed class ApplicationCompositionTests
     {
         var fixture = new Fixture();
         fixture.Sharing.State = RunningState(
-            "http://192.168.1.5:43127/",
+            "https://192.168.1.5:43127/",
             FirewallRuleStatus.Unknown);
 
         await fixture.Context.StartSharingAsync();
         fixture.Context.CreatePairingCode();
 
         fixture.Window.State.ServiceStatus.Should().Be("Running");
-        fixture.Window.State.SelectedUrl.Should().Be("http://192.168.1.5:43127/");
+        fixture.Window.State.SelectedUrl.Should().Be("https://192.168.1.5:43127/");
         fixture.Window.State.SelectedDuration.Should().Be(AuthorizationDuration.FiveHours);
         fixture.Window.State.FirewallStatus.Should().Be("Unknown - test from iPhone");
         fixture.Window.State.NetworkProfile.Should().Be("Private");
@@ -39,10 +39,10 @@ public sealed class ApplicationCompositionTests
         fixture.Window.State.FirewallSetupHelp.Should().Be("docs/firewall-setup.md");
         fixture.Window.State.Pairing.Should().NotBeNull();
         fixture.Window.State.Pairing!.PairingUrl.Should().Be(
-            "http://192.168.1.5:43127/pair#code=pair-code");
+            "https://192.168.1.5:43127/pair#code=pair-code");
         fixture.Qr.Payloads.Should().Equal(fixture.Window.State.Pairing.PairingUrl);
         fixture.Window.State.Pairing.QrCodePng.Should().Equal(
-            Encoding.UTF8.GetBytes("qr:http://192.168.1.5:43127/pair#code=pair-code"));
+            Encoding.UTF8.GetBytes("qr:https://192.168.1.5:43127/pair#code=pair-code"));
     }
 
     [Fact]
@@ -127,7 +127,7 @@ public sealed class ApplicationCompositionTests
                 callerThreadId = Environment.CurrentManagedThreadId;
                 var fixture = new Fixture();
                 fixture.Sharing.State = RunningState(
-                    "http://192.168.1.5:43127/",
+                    "https://192.168.1.5:43127/",
                     FirewallRuleStatus.Unknown);
                 fixture.Sharing.CompleteStartAsynchronously = true;
                 fixture.Sharing.StartEntered = () => events.Enqueue("sharing:start");
@@ -270,7 +270,7 @@ public sealed class ApplicationCompositionTests
         var state = TrayViewState.Empty with
         {
             Pairing = new PairingViewState(
-                "http://192.168.1.5:43127/pair#code=pair-code",
+                "https://192.168.1.5:43127/pair#code=pair-code",
                 CreatePngBytes(),
                 DateTimeOffset.UtcNow.AddMinutes(2)),
         };
@@ -449,7 +449,7 @@ public sealed class ApplicationCompositionTests
     {
         var fixture = new Fixture();
         fixture.Sharing.State = RunningState(
-            "http://192.168.1.5:43127/",
+            "https://192.168.1.5:43127/",
             FirewallRuleStatus.Unknown);
 
         fixture.Context.SetAuthorizationDuration(AuthorizationDuration.OneWeek);

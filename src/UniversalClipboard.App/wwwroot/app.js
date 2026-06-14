@@ -25,6 +25,10 @@ const CONTRACT = Object.freeze(
   "copy": {
     "confirmed": "Copied",
     "fallback": "Copy requested - verify, or long-press and choose Copy"
+  },
+  "session": {
+    "storageKey": "uc.sessionProof",
+    "headerName": "X-Clip-Session"
   }
 }
 /* app-contract:end */
@@ -73,6 +77,7 @@ function stopPolling() {
 function resetFeed() {
   stopPolling();
   clearClipboardDom();
+  sessionStorage.removeItem(CONTRACT.session.storageKey);
   instanceId = null;
   version = null;
 }
@@ -230,16 +235,22 @@ async function pollClips(forceFull) {
   }
 
   const requestController = new AbortController();
+  const sessionProof = sessionStorage.getItem(CONTRACT.session.storageKey);
+  const headers = sessionProof === null
+    ? {}
+    : { [CONTRACT.session.headerName]: sessionProof };
   activeRequest = requestController;
   try {
     const response = await fetch(buildClipsUrl(), {
       method: "GET",
       credentials: "same-origin",
       cache: "no-store",
+      headers,
       signal: requestController.signal
     });
 
     if (response.status === 401) {
+      sessionStorage.removeItem(CONTRACT.session.storageKey);
       applyLifecycleTransition("unauthorized");
       pairingMessage.textContent =
         "Pairing expired or was revoked. Generate a new code on Windows.";
@@ -314,6 +325,12 @@ async function exchangePairingFragment() {
       throw new Error("pairing failed");
     }
 
+    const pairing = await response.json();
+    if (typeof pairing.sessionProof !== "string" || pairing.sessionProof.length === 0) {
+      throw new Error("pairing proof missing");
+    }
+
+    sessionStorage.setItem(CONTRACT.session.storageKey, pairing.sessionProof);
     await pollClips(true);
   } catch {
     applyLifecycleTransition("unauthorized");
