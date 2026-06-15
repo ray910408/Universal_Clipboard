@@ -14,6 +14,7 @@ public sealed partial class TrayWindow :
 {
     private TrayViewState _state = TrayViewState.Empty;
     private bool _suppressInterfaceSelectionChanged;
+    private bool _suppressPermissionSelectionChanged;
 
     public TrayWindow()
     {
@@ -29,7 +30,10 @@ public sealed partial class TrayWindow :
         allowButton.Click += (_, _) => RaiseSelectedPending(AllowPendingRequested);
         discardButton.Click += (_, _) => RaiseSelectedPending(DiscardPendingRequested);
         withdrawButton.Click += (_, _) => RaiseSelectedShared(WithdrawSharedRequested);
+        applyIncomingButton.Click += (_, _) => RaiseSelectedIncoming(ApplyIncomingRequested);
+        discardIncomingButton.Click += (_, _) => RaiseSelectedIncoming(DiscardIncomingRequested);
         durationComboBox.SelectedValueChanged += DurationComboBoxChanged;
+        permissionComboBox.SelectedValueChanged += PermissionComboBoxChanged;
         interfaceComboBox.SelectedValueChanged += InterfaceComboBoxChanged;
     }
 
@@ -43,6 +47,8 @@ public sealed partial class TrayWindow :
 
     public event EventHandler<AuthorizationDuration>? AuthorizationDurationChanged;
 
+    public event EventHandler<AuthorizationPermissions>? AuthorizationPermissionsChanged;
+
     public event EventHandler<Guid>? RevokeAuthorizationRequested;
 
     public event EventHandler? RevokeAllAuthorizationsRequested;
@@ -53,9 +59,19 @@ public sealed partial class TrayWindow :
 
     public event EventHandler<Guid>? WithdrawSharedRequested;
 
+    public event EventHandler<Guid>? ApplyIncomingRequested;
+
+    public event EventHandler<Guid>? DiscardIncomingRequested;
+
     public event EventHandler<string>? InterfaceSelected;
 
     internal bool IsNotifyIconVisibleForTests => notifyIcon.Visible;
+
+    internal void RaiseApplyIncoming(Guid incomingId) =>
+        ApplyIncomingRequested?.Invoke(this, incomingId);
+
+    internal void RaiseDiscardIncoming(Guid incomingId) =>
+        DiscardIncomingRequested?.Invoke(this, incomingId);
 
     public void Render(TrayViewState state)
     {
@@ -70,10 +86,12 @@ public sealed partial class TrayWindow :
         warningLabel.Text = state.BlockingWarning ?? "";
         retryValue.Text = state.ClipboardRetryExhaustionCount.ToString();
         RenderDurationOptions(state);
+        RenderPermissionOptions(state);
         RenderInterfaceOptions(state);
         RenderList(browserListBox, state.PairedBrowsers);
         RenderList(sharedListBox, state.SharedItems);
         RenderList(pendingListBox, state.PendingSensitiveItems);
+        RenderList(incomingListBox, state.PendingIncomingItems);
         RenderPairing(state.Pairing);
     }
 
@@ -153,6 +171,24 @@ public sealed partial class TrayWindow :
         }
     }
 
+    private void RenderPermissionOptions(TrayViewState state)
+    {
+        _suppressPermissionSelectionChanged = true;
+        permissionComboBox.SelectedValueChanged -= PermissionComboBoxChanged;
+        try
+        {
+            permissionComboBox.DataSource = state.PermissionOptions.ToArray();
+            permissionComboBox.DisplayMember = nameof(PermissionOptionRow.DisplayName);
+            permissionComboBox.SelectedItem = state.PermissionOptions.FirstOrDefault(
+                item => item.Permissions == state.SelectedPermissions);
+        }
+        finally
+        {
+            permissionComboBox.SelectedValueChanged += PermissionComboBoxChanged;
+            _suppressPermissionSelectionChanged = false;
+        }
+    }
+
     private static void RenderList<T>(ListBox listBox, IEnumerable<T> items)
     {
         listBox.DataSource = items.ToArray();
@@ -160,7 +196,9 @@ public sealed partial class TrayWindow :
             ? nameof(BrowserAuthorizationRow.DisplayName)
             : typeof(T) == typeof(PendingClipboardViewItem)
                 ? nameof(PendingClipboardViewItem.MaskedPreview)
-                : nameof(ClipboardItemRow.Preview);
+                : typeof(T) == typeof(PendingIncomingTextRow)
+                    ? nameof(PendingIncomingTextRow.DisplayName)
+                    : nameof(ClipboardItemRow.Preview);
     }
 
     private void RenderPairing(PairingViewState? pairing)
@@ -202,12 +240,34 @@ public sealed partial class TrayWindow :
         }
     }
 
+    private void RaiseSelectedIncoming(EventHandler<Guid>? handler)
+    {
+        if (incomingListBox.SelectedItem is PendingIncomingTextRow row)
+        {
+            handler?.Invoke(this, row.ItemId);
+        }
+    }
+
     private void DurationComboBoxChanged(object? sender, EventArgs e)
     {
         if (durationComboBox.SelectedItem is DurationOptionRow row &&
             row.Duration != _state.SelectedDuration)
         {
             AuthorizationDurationChanged?.Invoke(this, row.Duration);
+        }
+    }
+
+    private void PermissionComboBoxChanged(object? sender, EventArgs e)
+    {
+        if (_suppressPermissionSelectionChanged)
+        {
+            return;
+        }
+
+        if (permissionComboBox.SelectedItem is PermissionOptionRow row &&
+            row.Permissions != _state.SelectedPermissions)
+        {
+            AuthorizationPermissionsChanged?.Invoke(this, row.Permissions);
         }
     }
 

@@ -19,6 +19,7 @@ public sealed record ClipboardApplicationServices(
     IPairingCodeProvider PairingCodes,
     IAuthorizationAdministration Authorizations,
     IClipboardContentStore Clipboard,
+    IWindowsClipboardWriter IncomingClipboard,
     IQrCodeRenderer QrCodeRenderer,
     TimeProvider? TimeProvider = null,
     Func<CancellationToken, Task>? ExitAsync = null);
@@ -47,6 +48,8 @@ public interface ITrayCommandSource
 
     event EventHandler<AuthorizationDuration>? AuthorizationDurationChanged;
 
+    event EventHandler<AuthorizationPermissions>? AuthorizationPermissionsChanged;
+
     event EventHandler<Guid>? RevokeAuthorizationRequested;
 
     event EventHandler? RevokeAllAuthorizationsRequested;
@@ -56,6 +59,10 @@ public interface ITrayCommandSource
     event EventHandler<Guid>? DiscardPendingRequested;
 
     event EventHandler<Guid>? WithdrawSharedRequested;
+
+    event EventHandler<Guid>? ApplyIncomingRequested;
+
+    event EventHandler<Guid>? DiscardIncomingRequested;
 
     event EventHandler<string>? InterfaceSelected;
 }
@@ -77,7 +84,11 @@ public interface ISharingController
 
 public interface IPairingCodeProvider
 {
-    PairingCodeSnapshot Create(AuthorizationDuration duration);
+    PairingCodeSnapshot Create(
+        AuthorizationDuration duration,
+        AuthorizationPermissions permissions);
+
+    void Invalidate();
 }
 
 public interface IQrCodeRenderer
@@ -104,9 +115,15 @@ public interface IClipboardContentStore
     void Clear();
 }
 
+public interface IWindowsClipboardWriter
+{
+    void SetText(string text);
+}
+
 public sealed record PairingCodeSnapshot(
     string Value,
-    DateTimeOffset ExpiresAtUtc);
+    DateTimeOffset ExpiresAtUtc,
+    AuthorizationPermissions Permissions);
 
 public sealed record TrayNotification(
     string Title,
@@ -120,10 +137,15 @@ public sealed record PairingViewState(
 public sealed record BrowserAuthorizationRow(
     Guid AuthorizationId,
     string Label,
+    string DeviceName,
+    string BrowserName,
     DateTimeOffset CreatedAtUtc,
+    string Created,
+    string LastAccessed,
     string AuthorizationIdSuffix,
     string BoundHost,
     string Expiry,
+    string Permissions,
     string DisplayName);
 
 public sealed record ClipboardItemRow(
@@ -137,6 +159,13 @@ public sealed record PendingClipboardViewItem(
     string MaskedPreview,
     DateTimeOffset CapturedAtUtc);
 
+public sealed record PendingIncomingTextRow(
+    Guid ItemId,
+    Guid AuthorizationId,
+    string DisplayName,
+    string MaskedPreview,
+    DateTimeOffset ReceivedAtUtc);
+
 public sealed record NetworkInterfaceOptionRow(
     string InterfaceId,
     string DisplayName);
@@ -145,15 +174,22 @@ public sealed record DurationOptionRow(
     AuthorizationDuration Duration,
     string DisplayName);
 
+public sealed record PermissionOptionRow(
+    AuthorizationPermissions Permissions,
+    string DisplayName);
+
 public sealed record TrayViewState(
     string ServiceStatus,
     string? SelectedUrl,
     AuthorizationDuration SelectedDuration,
+    AuthorizationPermissions SelectedPermissions,
     ImmutableArray<DurationOptionRow> DurationOptions,
+    ImmutableArray<PermissionOptionRow> PermissionOptions,
     PairingViewState? Pairing,
     ImmutableArray<BrowserAuthorizationRow> PairedBrowsers,
     ImmutableArray<ClipboardItemRow> SharedItems,
     ImmutableArray<PendingClipboardViewItem> PendingSensitiveItems,
+    ImmutableArray<PendingIncomingTextRow> PendingIncomingItems,
     ImmutableArray<NetworkInterfaceOptionRow> InterfaceOptions,
     string FirewallStatus,
     string NetworkProfile,
@@ -167,11 +203,14 @@ public sealed record TrayViewState(
             "Stopped",
             null,
             AuthorizationDuration.FiveHours,
+            AuthorizationPermissions.Read,
             ClipboardApplicationContext.DurationOptions,
+            ClipboardApplicationContext.PermissionOptions,
             null,
             ImmutableArray<BrowserAuthorizationRow>.Empty,
             ImmutableArray<ClipboardItemRow>.Empty,
             ImmutableArray<PendingClipboardViewItem>.Empty,
+            ImmutableArray<PendingIncomingTextRow>.Empty,
             ImmutableArray<NetworkInterfaceOptionRow>.Empty,
             "Unknown - test from iPhone",
             "Unknown",
@@ -184,18 +223,25 @@ public sealed record TrayViewState(
 public sealed class ClipboardApplicationContext :
     ApplicationContext,
     IClipboardNotificationSink,
+    IIncomingTextSink,
     IAsyncDisposable
 {
     private readonly ClipboardApplicationServices _services;
     private readonly TimeProvider _timeProvider;
     private readonly object _gate = new();
+    private readonly Dictionary<Guid, PendingIncomingText> _pendingIncoming = [];
     private PairingViewState? _pairing;
+    private string? _suppressNextClipboardText;
+    private DateTimeOffset _suppressNextClipboardTextUntilUtc;
     private int _clipboardRetryExhaustionCount;
     private int _shutdownStarted;
     private AuthorizationDuration _selectedDuration = AuthorizationDuration.FiveHours;
+    private AuthorizationPermissions _selectedPermissions = AuthorizationPermissions.Read;
     private TrayViewState _viewState = TrayViewState.Empty;
 
     public static LocalWebHostTimeouts ShutdownTimeouts { get; } = LocalWebHostTimeouts.Production;
+
+    internal static TimeSpan ClipboardApplyEchoSuppressionWindow { get; } = TimeSpan.FromSeconds(2);
 
     public static ImmutableArray<DurationOptionRow> DurationOptions { get; } =
         ImmutableArray.Create(
@@ -204,6 +250,12 @@ public sealed class ClipboardApplicationContext :
             new DurationOptionRow(AuthorizationDuration.OneDay, "1 day"),
             new DurationOptionRow(AuthorizationDuration.OneWeek, "1 week"),
             new DurationOptionRow(AuthorizationDuration.Permanent, "Permanent"));
+
+    public static ImmutableArray<PermissionOptionRow> PermissionOptions { get; } =
+        ImmutableArray.Create(
+            new PermissionOptionRow(AuthorizationPermissions.Read, "Read only"),
+            new PermissionOptionRow(AuthorizationPermissions.Write, "Write only"),
+            new PermissionOptionRow(AuthorizationPermissions.ReadWrite, "Read + Write"));
 
     public ClipboardApplicationContext(ClipboardApplicationServices services)
     {
@@ -232,6 +284,17 @@ public sealed class ClipboardApplicationContext :
             lock (_gate)
             {
                 return _selectedDuration;
+            }
+        }
+    }
+
+    public AuthorizationPermissions SelectedPermissions
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _selectedPermissions;
             }
         }
     }
@@ -280,6 +343,7 @@ public sealed class ClipboardApplicationContext :
             _pairing = null;
         }
 
+        _services.PairingCodes.Invalidate();
         RefreshView();
     }
 
@@ -292,7 +356,8 @@ public sealed class ClipboardApplicationContext :
         }
 
         var duration = SelectedDuration;
-        var code = _services.PairingCodes.Create(duration);
+        var permissions = SelectedPermissions;
+        var code = _services.PairingCodes.Create(duration, permissions);
         var pairingUrl = BuildPairingUrl(state.SelectedUrl, code.Value);
         var qrCode = _services.QrCodeRenderer.RenderPng(pairingUrl);
         lock (_gate)
@@ -316,7 +381,28 @@ public sealed class ClipboardApplicationContext :
                 "Authorization was not revoked",
                 $"Reason: {result.Failure}");
         }
+        else
+        {
+            ClearIncomingForAuthorization(authorizationId);
+        }
 
+        RefreshView();
+    }
+
+    public void SetAuthorizationPermissions(AuthorizationPermissions permissions)
+    {
+        if (!IsValidPermissions(permissions))
+        {
+            throw new ArgumentOutOfRangeException(nameof(permissions));
+        }
+
+        lock (_gate)
+        {
+            _selectedPermissions = permissions;
+            _pairing = null;
+        }
+
+        _services.PairingCodes.Invalidate();
         RefreshView();
     }
 
@@ -329,8 +415,144 @@ public sealed class ClipboardApplicationContext :
                 "Authorizations were not revoked",
                 $"Reason: {result.Failure}");
         }
+        else
+        {
+            ClearAllIncoming();
+        }
 
         RefreshView();
+    }
+
+    public IncomingTextItem EnqueueIncomingText(
+        Guid authorizationId,
+        string? deviceName,
+        string? browserName,
+        string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var item = new PendingIncomingText(
+            Guid.NewGuid(),
+            authorizationId,
+            deviceName,
+            browserName,
+            text,
+            _timeProvider.GetUtcNow().ToUniversalTime());
+        lock (_gate)
+        {
+            _pendingIncoming[item.IncomingId] = item;
+        }
+
+        NotifyAndShow(
+            "Pending incoming text",
+            "Text from a paired browser is waiting for approval.");
+        RefreshView();
+        return new IncomingTextItem(
+            item.IncomingId,
+            item.AuthorizationId,
+            item.DeviceName,
+            item.BrowserName,
+            item.Text,
+            item.ReceivedAtUtc);
+    }
+
+    public ValueTask<IncomingTextItem> EnqueueAsync(
+        IncomingTextRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(request);
+        var item = EnqueueIncomingText(
+            request.Authorization.Id,
+            request.Authorization.DeviceName,
+            request.Authorization.BrowserName,
+            request.Text);
+        return ValueTask.FromResult(item);
+    }
+
+    public ValueTask ClearAuthorizationAsync(
+        Guid authorizationId,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ClearIncomingForAuthorization(authorizationId);
+        RefreshView();
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask ClearAllAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ClearAllIncoming();
+        RefreshView();
+        return ValueTask.CompletedTask;
+    }
+
+    public void ApplyIncoming(Guid incomingId)
+    {
+        PendingIncomingText? item;
+        lock (_gate)
+        {
+            _pendingIncoming.TryGetValue(incomingId, out item);
+        }
+
+        if (item is not null)
+        {
+            lock (_gate)
+            {
+                _suppressNextClipboardText = item.Text;
+                _suppressNextClipboardTextUntilUtc =
+                    _timeProvider.GetUtcNow().ToUniversalTime() + ClipboardApplyEchoSuppressionWindow;
+            }
+
+            try
+            {
+                _services.IncomingClipboard.SetText(item.Text);
+            }
+            catch
+            {
+                ClearClipboardTextSuppression(item.Text);
+                throw;
+            }
+
+            lock (_gate)
+            {
+                _pendingIncoming.Remove(incomingId);
+            }
+        }
+
+        RefreshView();
+    }
+
+    public void DiscardIncoming(Guid incomingId)
+    {
+        lock (_gate)
+        {
+            _pendingIncoming.Remove(incomingId);
+        }
+
+        RefreshView();
+    }
+
+    public void ClearIncomingForAuthorization(Guid authorizationId)
+    {
+        lock (_gate)
+        {
+            foreach (var id in _pendingIncoming
+                .Where(pair => pair.Value.AuthorizationId == authorizationId)
+                .Select(pair => pair.Key)
+                .ToArray())
+            {
+                _pendingIncoming.Remove(id);
+            }
+        }
+    }
+
+    public void ClearAllIncoming()
+    {
+        lock (_gate)
+        {
+            _pendingIncoming.Clear();
+        }
     }
 
     public void AllowPending(Guid itemId)
@@ -367,6 +589,12 @@ public sealed class ClipboardApplicationContext :
     public void OnClipboardText(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
+        if (ShouldSuppressClipboardText(text))
+        {
+            RefreshView();
+            return;
+        }
+
         var result = _services.Clipboard.CaptureText(text);
         switch (result.Outcome)
         {
@@ -390,6 +618,48 @@ public sealed class ClipboardApplicationContext :
         }
 
         RefreshView();
+    }
+
+    private bool ShouldSuppressClipboardText(string text)
+    {
+        lock (_gate)
+        {
+            if (_suppressNextClipboardText is null)
+            {
+                return false;
+            }
+
+            if (_timeProvider.GetUtcNow().ToUniversalTime() > _suppressNextClipboardTextUntilUtc)
+            {
+                ClearClipboardTextSuppression();
+                return false;
+            }
+
+            if (!string.Equals(_suppressNextClipboardText, text, StringComparison.Ordinal))
+            {
+                ClearClipboardTextSuppression();
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    private void ClearClipboardTextSuppression(string text)
+    {
+        lock (_gate)
+        {
+            if (string.Equals(_suppressNextClipboardText, text, StringComparison.Ordinal))
+            {
+                ClearClipboardTextSuppression();
+            }
+        }
+    }
+
+    private void ClearClipboardTextSuppression()
+    {
+        _suppressNextClipboardText = null;
+        _suppressNextClipboardTextUntilUtc = default;
     }
 
     public void OnClipboardReadExhausted(ClipboardReadDiagnostic diagnostic)
@@ -420,6 +690,8 @@ public sealed class ClipboardApplicationContext :
         catch (LocalWebHostShutdownIncompleteException)
         {
             completedOrderly = false;
+            ClearAllIncoming();
+            RefreshView();
             NotifyAndShow(
                 "Sharing did not stop cleanly",
                 "Network handlers did not exit after bounded shutdown; terminating without clearing clipboard memory.");
@@ -427,7 +699,9 @@ public sealed class ClipboardApplicationContext :
 
         if (completedOrderly)
         {
+            ClearAllIncoming();
             _services.Clipboard.Clear();
+            RefreshView();
         }
 
         ExitThread();
@@ -445,6 +719,7 @@ public sealed class ClipboardApplicationContext :
         PairingViewState? pairing;
         int retries;
         AuthorizationDuration selectedDuration;
+        AuthorizationPermissions selectedPermissions;
         lock (_gate)
         {
             pairing = IsPairingCurrent(_pairing) ? _pairing : null;
@@ -455,13 +730,16 @@ public sealed class ClipboardApplicationContext :
 
             retries = _clipboardRetryExhaustionCount;
             selectedDuration = _selectedDuration;
+            selectedPermissions = _selectedPermissions;
         }
 
         return new TrayViewState(
             BuildServiceStatus(network),
             network.SelectedUrl,
             selectedDuration,
+            selectedPermissions,
             DurationOptions,
+            PermissionOptions,
             pairing,
             ToAuthorizationRows(_services.Authorizations.List()),
             _services.Clipboard.HistorySnapshot.Items
@@ -469,6 +747,7 @@ public sealed class ClipboardApplicationContext :
                 .Select(ToClipboardRow)
                 .ToImmutableArray(),
             _services.Clipboard.PendingItems.ToImmutableArray(),
+            ToIncomingRows(),
             BuildInterfaceOptions(network),
             BuildFirewallStatus(network.FirewallRuleStatus),
             BuildNetworkProfile(network),
@@ -507,6 +786,11 @@ public sealed class ClipboardApplicationContext :
             SetAuthorizationDuration(duration);
             return Task.CompletedTask;
         });
+        commands.AuthorizationPermissionsChanged += (_, permissions) => RunCommand(() =>
+        {
+            SetAuthorizationPermissions(permissions);
+            return Task.CompletedTask;
+        });
         commands.RevokeAuthorizationRequested += (_, id) => RunCommand(() => RevokeAsync(id));
         commands.RevokeAllAuthorizationsRequested += (_, _) => RunCommand(() => RevokeAllAsync());
         commands.AllowPendingRequested += (_, id) => RunCommand(() =>
@@ -522,6 +806,16 @@ public sealed class ClipboardApplicationContext :
         commands.WithdrawSharedRequested += (_, id) => RunCommand(() =>
         {
             WithdrawShared(id);
+            return Task.CompletedTask;
+        });
+        commands.ApplyIncomingRequested += (_, id) => RunCommand(() =>
+        {
+            ApplyIncoming(id);
+            return Task.CompletedTask;
+        });
+        commands.DiscardIncomingRequested += (_, id) => RunCommand(() =>
+        {
+            DiscardIncoming(id);
             return Task.CompletedTask;
         });
         commands.InterfaceSelected += (_, interfaceId) => RunCommand(() => SelectInterfaceAsync(interfaceId));
@@ -578,16 +872,33 @@ public sealed class ClipboardApplicationContext :
 
     private static BrowserAuthorizationRow ToAuthorizationRow(
         AuthorizationMetadata authorization,
-        string suffix) =>
-        new(
+        string suffix)
+    {
+        var deviceName = string.IsNullOrWhiteSpace(authorization.DeviceName)
+            ? authorization.Label
+            : authorization.DeviceName!;
+        var browserName = string.IsNullOrWhiteSpace(authorization.BrowserName)
+            ? "Unknown browser"
+            : authorization.BrowserName!;
+        var created = FormatUtc(authorization.CreatedAtUtc);
+        var lastAccessed = FormatLastAccess(authorization.LastAccessedAtUtc);
+        var expiry = FormatExpiry(authorization.ExpiresAtUtc);
+        var permissions = FormatPermissionDisplay(authorization.Permissions);
+        return new BrowserAuthorizationRow(
             authorization.Id,
             authorization.Label,
+            deviceName,
+            browserName,
             authorization.CreatedAtUtc,
+            created,
+            lastAccessed,
             suffix,
             authorization.BoundHostIpv4.ToString(),
-            FormatExpiry(authorization.ExpiresAtUtc),
-            $"{authorization.Label} - {suffix} - created {FormatUtc(authorization.CreatedAtUtc)} - " +
-            $"expires {FormatExpiry(authorization.ExpiresAtUtc)}");
+            expiry,
+            permissions,
+            $"Device: {deviceName}; Browser: {browserName}; Id: {suffix}; Created: {created}; " +
+            $"Last access: {lastAccessed}; Expires: {expiry}; Permissions: {permissions}");
+    }
 
     private static string UniqueAuthorizationSuffix(
         IReadOnlyList<string> authorizationIds,
@@ -621,8 +932,48 @@ public sealed class ClipboardApplicationContext :
     private static string FormatExpiry(DateTimeOffset? expiresAtUtc) =>
         expiresAtUtc is null ? "Until revoked" : FormatUtc(expiresAtUtc.Value);
 
+    private static string FormatLastAccess(DateTimeOffset? lastAccessedAtUtc) =>
+        lastAccessedAtUtc is null ? "Never" : FormatUtc(lastAccessedAtUtc.Value);
+
+    private static string FormatPermissionDisplay(AuthorizationPermissions permissions) =>
+        permissions switch
+        {
+            AuthorizationPermissions.Read => "Read",
+            AuthorizationPermissions.Write => "Write",
+            AuthorizationPermissions.ReadWrite => "Read / Write",
+            _ => "Unknown",
+        };
+
+    private static bool IsValidPermissions(AuthorizationPermissions permissions) =>
+        permissions is not AuthorizationPermissions.None &&
+        (permissions & ~AuthorizationPermissions.ReadWrite) == 0;
+
     private static ClipboardItemRow ToClipboardRow(ClipboardItem item) =>
         new(item.Id, item.Text, item.CapturedAtUtc);
+
+    private ImmutableArray<PendingIncomingTextRow> ToIncomingRows()
+    {
+        lock (_gate)
+        {
+            return _pendingIncoming.Values
+                .OrderByDescending(item => item.ReceivedAtUtc)
+                .Select(item => new PendingIncomingTextRow(
+                    item.IncomingId,
+                    item.AuthorizationId,
+                    FormatIncomingDisplayName(item),
+                    MaskPreview(item.Text),
+                    item.ReceivedAtUtc))
+                .ToImmutableArray();
+        }
+    }
+
+    private static string FormatIncomingDisplayName(PendingIncomingText item)
+    {
+        var parts = new[] { item.DeviceName, item.BrowserName }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToArray();
+        return parts.Length == 0 ? "Paired browser" : string.Join(" - ", parts);
+    }
 
     private static ImmutableArray<NetworkInterfaceOptionRow> BuildInterfaceOptions(
         NetworkSharingState network) =>
@@ -714,6 +1065,14 @@ public sealed class ClipboardApplicationContext :
         return $"[masked {scalarCount} chars]";
     }
 }
+
+internal sealed record PendingIncomingText(
+    Guid IncomingId,
+    Guid AuthorizationId,
+    string? DeviceName,
+    string? BrowserName,
+    string Text,
+    DateTimeOffset ReceivedAtUtc);
 
 public sealed class ClipboardPipelineContentStore : IClipboardContentStore
 {
@@ -850,11 +1209,15 @@ public sealed class ClipboardPipelineContentStore : IClipboardContentStore
 
 public sealed class PairingCodeProvider(PairingCodeManager pairingCodes) : IPairingCodeProvider
 {
-    public PairingCodeSnapshot Create(AuthorizationDuration duration)
+    public PairingCodeSnapshot Create(
+        AuthorizationDuration duration,
+        AuthorizationPermissions permissions)
     {
-        var code = pairingCodes.Create(duration);
-        return new PairingCodeSnapshot(code.Value, code.ExpiresAtUtc);
+        var code = pairingCodes.Create(duration, permissions);
+        return new PairingCodeSnapshot(code.Value, code.ExpiresAtUtc, code.Permissions);
     }
+
+    public void Invalidate() => pairingCodes.Invalidate();
 }
 
 public sealed class QrCodeRenderer : IQrCodeRenderer
@@ -902,6 +1265,7 @@ internal sealed class LocalWebHostController(
     IAuthorizationService authorization,
     Func<ClipboardSnapshot> snapshotProvider,
     Func<AuthorizationDuration> durationProvider,
+    IIncomingTextSink? incomingTextSink = null,
     TimeProvider? timeProvider = null,
     Func<IPEndPoint, ILocalWebHostInstance>? hostFactory = null)
     : ILocalWebHostController,
@@ -925,7 +1289,8 @@ internal sealed class LocalWebHostController(
                 authorization,
                 snapshotProvider,
                 durationProvider,
-                timeProvider);
+                timeProvider,
+                incomingTextSink: incomingTextSink);
             _host = host;
         }
 

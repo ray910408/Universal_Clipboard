@@ -58,6 +58,201 @@ public sealed class AuthorizationCoordinatorLeaseTests
     }
 
     [Fact]
+    public async Task Read_lease_succeeds_for_read_only_authorization()
+    {
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var record = AuthorizationRecordFactory.Create(
+            permissions: AuthorizationPermissions.Read);
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+        await using var coordinator = await CreateCoordinatorAsync(persistence);
+
+        using var lease = coordinator.AcquireLease(
+            new AcquireLeaseRequest(
+                record.Id,
+                token,
+                IPAddress.Loopback,
+                AuthorizationRecordFactory.ProofForByte(),
+                AuthorizationPermissions.Read)).Lease;
+
+        lease.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Write_lease_fails_without_write_permission()
+    {
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var record = AuthorizationRecordFactory.Create(
+            permissions: AuthorizationPermissions.Read);
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+        await using var coordinator = await CreateCoordinatorAsync(persistence);
+
+        var acquisition = coordinator.AcquireLease(
+            new AcquireLeaseRequest(
+                record.Id,
+                token,
+                IPAddress.Loopback,
+                AuthorizationRecordFactory.ProofForByte(),
+                AuthorizationPermissions.Write));
+
+        acquisition.Failure.Should().Be(AuthorizationFailure.PermissionDenied);
+        acquisition.Lease.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Write_lease_succeeds_with_write_permission()
+    {
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var record = AuthorizationRecordFactory.Create(
+            permissions: AuthorizationPermissions.ReadWrite);
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+        await using var coordinator = await CreateCoordinatorAsync(persistence);
+
+        using var lease = coordinator.AcquireLease(
+            new AcquireLeaseRequest(
+                record.Id,
+                token,
+                IPAddress.Loopback,
+                AuthorizationRecordFactory.ProofForByte(),
+                AuthorizationPermissions.Write)).Lease;
+
+        lease.Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData(AuthorizationPermissions.None)]
+    [InlineData((AuthorizationPermissions)4)]
+    public async Task AcquireLease_denies_invalid_required_permission(
+        AuthorizationPermissions requiredPermission)
+    {
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var record = AuthorizationRecordFactory.Create(
+            permissions: AuthorizationPermissions.ReadWrite);
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+        await using var coordinator = await CreateCoordinatorAsync(persistence);
+
+        var acquisition = coordinator.AcquireLease(
+            new AcquireLeaseRequest(
+                record.Id,
+                token,
+                IPAddress.Loopback,
+                AuthorizationRecordFactory.ProofForByte(),
+                requiredPermission));
+
+        acquisition.Failure.Should().Be(AuthorizationFailure.PermissionDenied);
+        acquisition.Lease.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Successful_lease_updates_last_access_in_administration_snapshot_without_persisting()
+    {
+        var clock = new ManualTimeProvider(AuthorizationRecordFactory.Now);
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var record = AuthorizationRecordFactory.Create(lastAccessedAtUtc: null);
+        var persistence = new FakeAuthorizationPersistence(new AuthorizationDocument([record]));
+        await using var coordinator = await CreateCoordinatorAsync(persistence, clock);
+
+        clock.Advance(TimeSpan.FromMinutes(3));
+        using var lease = coordinator.AcquireLease(
+            new AcquireLeaseRequest(
+                record.Id,
+                token,
+                IPAddress.Loopback,
+                AuthorizationRecordFactory.ProofForByte(),
+                AuthorizationPermissions.Read)).Lease;
+
+        lease.Should().NotBeNull();
+        coordinator.List().Should().ContainSingle()
+            .Which.LastAccessedAtUtc.Should().Be(clock.GetUtcNow());
+        persistence.SaveAttempts.Should().BeEmpty(
+            "polling authorization checks update memory without forcing a DPAPI write");
+    }
+
+    [Fact]
+    public async Task Successful_lease_last_access_survives_later_successful_revoke_of_another_authorization()
+    {
+        var clock = new ManualTimeProvider(AuthorizationRecordFactory.Now);
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var accessed = AuthorizationRecordFactory.Create(
+            id: Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            lastAccessedAtUtc: null);
+        var revoked = AuthorizationRecordFactory.Create(
+            id: Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            tokenByte: 8,
+            proofByte: 11);
+        var persistence = new FakeAuthorizationPersistence(
+            new AuthorizationDocument([accessed, revoked]));
+        await using var coordinator = await CreateCoordinatorAsync(persistence, clock);
+
+        clock.Advance(TimeSpan.FromMinutes(7));
+        using var lease = coordinator.AcquireLease(
+            new AcquireLeaseRequest(
+                accessed.Id,
+                token,
+                IPAddress.Loopback,
+                AuthorizationRecordFactory.ProofForByte())).Lease;
+        lease.Should().NotBeNull();
+
+        var result = await coordinator.RevokeAsync(revoked.Id);
+
+        result.Succeeded.Should().BeTrue();
+        var expectedLastAccess = clock.GetUtcNow();
+        coordinator.List().Should().ContainSingle()
+            .Which.LastAccessedAtUtc.Should().Be(expectedLastAccess);
+        persistence.SavedDocument!.Authorizations.Should().ContainSingle()
+            .Which.LastAccessedAtUtc.Should().Be(expectedLastAccess);
+    }
+
+    [Fact]
+    public async Task Successful_lease_last_access_survives_revoke_publish_after_blocked_save()
+    {
+        var clock = new ManualTimeProvider(AuthorizationRecordFactory.Now);
+        var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
+        var accessed = AuthorizationRecordFactory.Create(
+            id: Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            lastAccessedAtUtc: null);
+        var revoked = AuthorizationRecordFactory.Create(
+            id: Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            tokenByte: 8,
+            proofByte: 11);
+        var saveStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSave = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var persistence = new FakeAuthorizationPersistence(
+            new AuthorizationDocument([accessed, revoked]))
+        {
+            OnSaveAsync = async (_, _) =>
+            {
+                saveStarted.TrySetResult();
+                await releaseSave.Task;
+            },
+        };
+        await using var coordinator = await CreateCoordinatorAsync(persistence, clock);
+
+        var revokeTask = coordinator.RevokeAsync(revoked.Id).AsTask();
+        await saveStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        clock.Advance(TimeSpan.FromMinutes(11));
+        using var lease = coordinator.AcquireLease(
+            new AcquireLeaseRequest(
+                accessed.Id,
+                token,
+                IPAddress.Loopback,
+                AuthorizationRecordFactory.ProofForByte())).Lease;
+        lease.Should().NotBeNull();
+        var expectedLastAccess = clock.GetUtcNow();
+
+        releaseSave.SetResult();
+        var result = await revokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        result.Succeeded.Should().BeTrue();
+        coordinator.List().Should().ContainSingle()
+            .Which.LastAccessedAtUtc.Should().Be(expectedLastAccess);
+        persistence.SavedDocument!.Authorizations.Should().ContainSingle()
+            .Which.LastAccessedAtUtc.Should().Be(expectedLastAccess);
+    }
+
+    [Fact]
     public async Task Reloaded_authorization_requires_independent_session_proof()
     {
         var token = SessionToken.FromBytes(Enumerable.Repeat((byte)9, 32).ToArray());
@@ -141,7 +336,8 @@ public sealed class AuthorizationCoordinatorLeaseTests
         lease.Dispose();
         await saveStarted.Task;
 
-        coordinator.List().Should().Equal(AuthorizationRecordFactory.Metadata(record));
+        coordinator.List().Should().Equal(
+            AuthorizationRecordFactory.Metadata(record with { LastAccessedAtUtc = AuthorizationRecordFactory.Now }));
         revokeTask.IsCompleted.Should().BeFalse();
 
         releaseSave.SetResult();
@@ -176,7 +372,8 @@ public sealed class AuthorizationCoordinatorLeaseTests
         var result = await revokeTask;
 
         result.Failure.Should().Be(AuthorizationFailure.PersistenceFailed);
-        coordinator.List().Should().Equal(AuthorizationRecordFactory.Metadata(record));
+        coordinator.List().Should().Equal(
+            AuthorizationRecordFactory.Metadata(record with { LastAccessedAtUtc = AuthorizationRecordFactory.Now }));
         using var restoredLease = coordinator.AcquireLease(
             new AcquireLeaseRequest(record.Id, token, IPAddress.Loopback, AuthorizationRecordFactory.ProofForByte())).Lease;
         restoredLease.Should().NotBeNull();

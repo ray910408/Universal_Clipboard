@@ -2,7 +2,9 @@
 
 Universal Clipboard is a personal Windows-to-iPhone text bridge. Copy plain text on
 Windows, open the paired local page on iPhone Safari, tap **Copy to iPhone**, then
-paste in another iPhone app.
+paste in another iPhone app. Write-enabled pairings can also send text from iPhone
+Safari back to Windows, where it stays pending until you click **Apply to Windows
+Clipboard** in the tray.
 
 This MVP is intentionally local-first:
 
@@ -36,7 +38,8 @@ rule for TCP `43127`, run from **Administrator PowerShell**:
 ```powershell
 .\scripts\run.ps1 -ConfigureFirewall
 ```
-delete
+
+To remove the firewall rule later, run:
 
 ```powershell
 .\scripts\remove-firewall.ps1
@@ -63,9 +66,12 @@ flowchart LR
     A["Windows clipboard"] --> B["UniversalClipboard.App tray process"]
     B --> C["Local Kestrel HTTPS<br/>self-signed cert on :43127"]
     C --> D["iPhone Safari page<br/>paired same-LAN browser"]
-    D --> E{"Copy path"}
+    D --> E{"Copy to iPhone"}
     E -->|Preferred when available| F["Clipboard API copy"]
     E -->|Reliable fallback| G["Manual textarea selection<br/>long-press Copy"]
+    D -->|Write permission only| H["POST /clip-api/incoming-text"]
+    H --> I["Pending incoming text<br/>Windows tray approval"]
+    I -->|Apply to Windows Clipboard| A
 ```
 
 ## Build From Source
@@ -97,11 +103,17 @@ MVP; verify the source and checksums before running builds you did not create.
 4. If multiple eligible LAN interfaces are shown, choose the one on the same network
    as the iPhone.
 5. Choose a pairing duration. The default is **5 hours**.
-6. Generate a pairing QR code in the tray window.
-7. Open or scan the pairing URL on iPhone Safari.
-8. Copy text on Windows. Sensitive-looking text is held for approval in the tray.
-9. On iPhone, tap **Copy to iPhone**. If Safari does not allow one-tap
+6. Choose pairing permission. The default is **Read only**. Select **Read + Write**
+   before generating the QR code if the iPhone should both read Windows clips and
+   send text back. Select **Write only** only when the phone should submit text but
+   not read the Windows feed.
+7. Generate a pairing QR code in the tray window.
+8. Open or scan the pairing URL on iPhone Safari.
+9. Copy text on Windows. Sensitive-looking text is held for approval in the tray.
+10. On iPhone, tap **Copy to iPhone**. If Safari does not allow one-tap
    clipboard copy, use the selected textarea and long-press **Copy**.
+11. For Write-enabled pairings, use **Send to Windows** on iPhone, then approve the
+    pending incoming item from the Windows tray.
 
 ## Pairing Durations
 
@@ -113,12 +125,22 @@ MVP; verify the source and checksums before running builds you did not create.
   high risk; revoke it when no longer needed. Safari may still delete its cookie.
 
 Every paired browser authorization can read the latest three shared items while it
-is valid. Revoke one browser or revoke all from the tray window.
+is valid unless it was paired as **Write only**. New pairings default to **Read
+only**. Revoke one browser or revoke all from the tray window.
+
+## Pairing Permissions
+
+- **Read only**: iPhone Safari can fetch the Windows feed and use **Copy to iPhone**.
+  This is the default.
+- **Write only**: iPhone Safari can use **Send to Windows**, but it cannot read the
+  Windows feed.
+- **Read + Write**: iPhone Safari can use both directions. Incoming text still waits
+  in the tray until you approve it with **Apply to Windows Clipboard**.
 
 ## Privacy And Security Limits
 
 Clipboard text stays in process memory only. Restarting the Windows app clears
-shared and pending clipboard content. Authorization metadata is stored under
+shared, pending, and incoming clipboard content. Authorization metadata is stored under
 `%LOCALAPPDATA%\UniversalClipboard\authorizations.v1.bin` and protected with Windows
 DPAPI for the current user. The file stores token and session-proof digests, not
 plaintext session tokens, session proofs, pairing codes, or clipboard text.
@@ -133,6 +155,9 @@ Important limits:
 - Authorization requires both the host-scoped HttpOnly `clip_session` cookie and an
   independent `X-Clip-Session` proof stored in Safari `sessionStorage`. The cookie
   uses `HttpOnly`, `Secure`, `SameSite=Strict`, and `Path=/clip-api`.
+- Incoming iPhone-to-Windows text requires a Write-enabled pairing and is never
+  applied automatically. Revoke, revoke all, expiry cleanup, and app exit clear the
+  relevant incoming queue.
 - Sensitive detection is a guardrail, not data loss prevention. It covers PEM
   private keys, GitHub classic and fine-grained tokens, and AWS `AKIA`/`ASIA`
   access-key identifiers.
@@ -153,6 +178,8 @@ Important limits:
 - **Copy button does not confirm Copied**: use the visible selected text and
   long-press Copy. Manual copy is the reliable Safari fallback when one-tap
   Clipboard API access is unavailable.
+- **Send to Windows is disabled**: generate a new QR code with **Read + Write** or
+  **Write only** selected, then pair Safari again.
   
 ## Star History
 

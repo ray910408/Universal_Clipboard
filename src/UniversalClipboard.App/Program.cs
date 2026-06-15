@@ -3,6 +3,7 @@ using UniversalClipboard.App.Clipboard;
 using UniversalClipboard.App.Network;
 using UniversalClipboard.App.Security;
 using UniversalClipboard.App.Ui;
+using UniversalClipboard.App.Web;
 using UniversalClipboard.Core.Authorization;
 
 namespace UniversalClipboard.App;
@@ -62,11 +63,13 @@ internal static class Program
                 pairingCodes,
                 new SessionTokenService()).GetAwaiter().GetResult();
             var clipboard = new ClipboardPipelineContentStore();
+            var incomingSink = new DeferredIncomingTextSink(() => context);
 
             hostController = new LocalWebHostController(
                 authorization,
                 () => clipboard.HistorySnapshot,
-                () => context?.SelectedDuration ?? AuthorizationDuration.FiveHours);
+                () => context?.SelectedDuration ?? AuthorizationDuration.FiveHours,
+                incomingSink);
             var network = new NetworkCoordinator(
                 new WindowsNetworkEnvironment(),
                 new TcpPortProbe(new SystemTcpPortInspector()),
@@ -86,6 +89,7 @@ internal static class Program
                     new PairingCodeProvider(pairingCodes),
                     authorization,
                     clipboard,
+                    new WindowsClipboardWriter(scheduler),
                     new QrCodeRenderer(),
                     ExitAsync: cancellationToken => ShutdownFromTrayAsync(
                         () => monitor,
@@ -190,6 +194,30 @@ internal static class Program
             "Universal Clipboard",
             MessageBoxButtons.OK,
             MessageBoxIcon.Error);
+
+    private sealed class DeferredIncomingTextSink(Func<IIncomingTextSink?> sinkProvider)
+        : IIncomingTextSink
+    {
+        public ValueTask<IncomingTextItem> EnqueueAsync(
+            IncomingTextRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return GetSink().EnqueueAsync(request, cancellationToken);
+        }
+
+        public ValueTask ClearAuthorizationAsync(
+            Guid authorizationId,
+            CancellationToken cancellationToken = default) =>
+            sinkProvider()?.ClearAuthorizationAsync(authorizationId, cancellationToken)
+            ?? ValueTask.CompletedTask;
+
+        public ValueTask ClearAllAsync(CancellationToken cancellationToken = default) =>
+            sinkProvider()?.ClearAllAsync(cancellationToken) ?? ValueTask.CompletedTask;
+
+        private IIncomingTextSink GetSink() =>
+            sinkProvider() ??
+            throw new InvalidOperationException("The incoming text sink is not available.");
+    }
 
     internal static TMonitor StartSharingThenRegisterClipboard<TMonitor>(
         ISharingController sharing,

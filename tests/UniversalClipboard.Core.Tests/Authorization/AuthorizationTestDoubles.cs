@@ -83,6 +83,10 @@ internal static class AuthorizationRecordFactory
         string label = "Existing browser",
         IPAddress? boundHostIpv4 = null,
         DateTimeOffset? expiresAtUtc = null,
+        string? deviceName = null,
+        string? browserName = null,
+        DateTimeOffset? lastAccessedAtUtc = null,
+        AuthorizationPermissions permissions = AuthorizationPermissions.Read,
         byte tokenByte = 9,
         byte proofByte = 10)
     {
@@ -94,6 +98,10 @@ internal static class AuthorizationRecordFactory
             Now,
             boundHostIpv4 ?? IPAddress.Loopback,
             expiresAtUtc ?? Now.AddHours(5),
+            deviceName,
+            browserName,
+            lastAccessedAtUtc,
+            permissions,
             ImmutableArray.Create(SHA256.HashData(tokenBytes)),
             ImmutableArray.Create(SHA256.HashData(proofBytes)));
     }
@@ -110,5 +118,9 @@ internal static class AuthorizationRecordFactory
             authorization.Label,
             authorization.CreatedAtUtc,
             authorization.BoundHostIpv4,
-            authorization.ExpiresAtUtc);
+            authorization.ExpiresAtUtc,
+            authorization.DeviceName,
+            authorization.BrowserName,
+            authorization.LastAccessedAtUtc,
+            authorization.Permissions);
 }

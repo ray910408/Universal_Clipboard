@@ -61,10 +61,8 @@ public sealed class ApplicationCompositionTests
 
         fixture.Window.State.PairedBrowsers.Select(row => row.AuthorizationIdSuffix)
             .Should().Equal("ERERERER", "IiIiIiIi");
-        fixture.Window.State.PairedBrowsers.Select(row => row.DisplayName)
-            .Should().Equal(
-                "Safari - ERERERER - created 2026-06-12 00:00 UTC - expires 2026-06-12 05:00 UTC",
-                "Safari - IiIiIiIi - created 2026-06-12 00:00 UTC - expires 2026-06-12 05:00 UTC");
+        fixture.Window.State.PairedBrowsers[0].DisplayName.Should().Contain("Id: ERERERER");
+        fixture.Window.State.PairedBrowsers[1].DisplayName.Should().Contain("Id: IiIiIiIi");
     }
 
     [Fact]
@@ -222,22 +220,37 @@ public sealed class ApplicationCompositionTests
     }
 
     [Fact]
-    public void Tray_window_names_paired_browser_authorizations_list()
+    public void Tray_window_names_paired_devices_permission_and_incoming_lists()
     {
         using var window = new TrayWindow();
 
         window.Controls.OfType<Label>()
             .Select(label => label.Text)
             .Should()
-            .Contain("Paired browser authorizations");
+            .Contain(
+                "Paired devices",
+                "Permission",
+                "Pending incoming text");
     }
 
     [Fact]
     public void Tray_window_keeps_pending_actions_separate_from_global_commands()
     {
         using var window = new TrayWindow();
-        var pendingActions = Buttons(window, "Allow once", "Discard");
-        var globalCommands = Buttons(window, "Start", "Stop", "Pair", "Revoke", "Revoke all", "Exit");
+        var pendingActions = Buttons(
+            window,
+            "Allow once",
+            "Discard",
+            "Apply to Windows Clipboard",
+            "Discard incoming");
+        var globalCommands = Buttons(
+            window,
+            "Start",
+            "Stop",
+            "Pair",
+            "Revoke",
+            "Revoke all",
+            "Exit");
 
         foreach (var pendingAction in pendingActions)
         {
@@ -266,6 +279,25 @@ public sealed class ApplicationCompositionTests
 
         window.IsNotifyIconVisibleForTests.Should().BeFalse();
     }
+
+    [Fact]
+    public void Tray_window_incoming_command_events_are_not_noop()
+    {
+        using var window = new TrayWindow();
+        var incomingId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var applied = new List<Guid>();
+        var discarded = new List<Guid>();
+
+        window.ApplyIncomingRequested += (_, id) => applied.Add(id);
+        window.DiscardIncomingRequested += (_, id) => discarded.Add(id);
+
+        window.RaiseApplyIncoming(incomingId);
+        window.RaiseDiscardIncoming(incomingId);
+
+        applied.Should().Equal(incomingId);
+        discarded.Should().Equal(incomingId);
+    }
+
 
     [Fact]
     public void Tray_window_rendering_interface_options_does_not_select_an_interface()
@@ -436,6 +468,266 @@ public sealed class ApplicationCompositionTests
     }
 
     [Fact]
+    public void Paired_device_rows_display_metadata_last_access_expiry_and_permissions()
+    {
+        var authorizationId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var fixture = new Fixture();
+        fixture.Authorizations.Authorizations =
+        [
+            Metadata(
+                authorizationId,
+                "iPhone Safari",
+                deviceName: "Kenneth's iPhone",
+                browserName: "Safari",
+                lastAccessedAtUtc: new DateTimeOffset(2026, 6, 12, 1, 5, 0, TimeSpan.Zero),
+                permissions: AuthorizationPermissions.ReadWrite),
+        ];
+
+        fixture.Context.RefreshView();
+
+        var row = fixture.Window.State.PairedBrowsers.Should().ContainSingle().Subject;
+        row.DeviceName.Should().Be("Kenneth's iPhone");
+        row.BrowserName.Should().Be("Safari");
+        row.Created.Should().Be("2026-06-12 00:00 UTC");
+        row.LastAccessed.Should().Be("2026-06-12 01:05 UTC");
+        row.Expiry.Should().Be("2026-06-12 05:00 UTC");
+        row.Permissions.Should().Be("Read / Write");
+        row.DisplayName.Should().Contain("Device: Kenneth's iPhone");
+        row.DisplayName.Should().Contain("Browser: Safari");
+        row.DisplayName.Should().Contain("Last access: 2026-06-12 01:05 UTC");
+    }
+
+    [Fact]
+    public void Paired_device_rows_show_never_for_missing_last_access()
+    {
+        var fixture = new Fixture();
+        fixture.Authorizations.Authorizations =
+        [
+            Metadata(Guid.Parse("11111111-1111-1111-1111-111111111111"), "Legacy Safari"),
+        ];
+
+        fixture.Context.RefreshView();
+
+        fixture.Window.State.PairedBrowsers.Single().LastAccessed.Should().Be("Never");
+    }
+
+    [Fact]
+    public void Incoming_text_appears_as_masked_pending_row_and_content_free_notification()
+    {
+        var authorizationId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var fixture = new Fixture();
+        fixture.Authorizations.Authorizations =
+        [
+            Metadata(
+                authorizationId,
+                "Safari",
+                deviceName: "Kenneth's iPhone",
+                browserName: "Safari",
+                permissions: AuthorizationPermissions.Write),
+        ];
+
+        var item = fixture.Context.EnqueueIncomingText(
+            authorizationId,
+            "Kenneth's iPhone",
+            "Safari",
+            "secret from phone");
+
+        var row = fixture.Window.State.PendingIncomingItems.Should().ContainSingle().Subject;
+        row.ItemId.Should().Be(item.IncomingId);
+        row.AuthorizationId.Should().Be(authorizationId);
+        row.DisplayName.Should().Contain("Kenneth's iPhone");
+        row.DisplayName.Should().Contain("Safari");
+        row.MaskedPreview.Should().Be("[masked 17 chars]");
+        row.MaskedPreview.Should().NotContain("secret from phone");
+        fixture.Notifications.Items.Should().ContainSingle()
+            .Which.Title.Should().Be("Pending incoming text");
+        fixture.Notifications.Items.Single().Body.Should().NotContain("secret from phone");
+    }
+
+    [Fact]
+    public void Apply_incoming_writes_exact_text_and_clears_item()
+    {
+        var fixture = new Fixture();
+        var item = fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "exact incoming text");
+
+        fixture.Context.ApplyIncoming(item.IncomingId);
+
+        fixture.IncomingClipboard.Writes.Should().Equal("exact incoming text");
+        fixture.Window.State.PendingIncomingItems.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Apply_incoming_does_not_republish_the_same_clipboard_event_to_iphone()
+    {
+        var fixture = new Fixture();
+        var item = fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "incoming roundtrip");
+
+        fixture.Context.ApplyIncoming(item.IncomingId);
+        fixture.Context.OnClipboardText("incoming roundtrip");
+
+        fixture.Window.State.SharedItems.Should().BeEmpty();
+        fixture.Context.OnClipboardText("user copied later");
+        fixture.Window.State.SharedItems.Should().ContainSingle()
+            .Which.Preview.Should().Be("user copied later");
+    }
+
+    [Fact]
+    public void Apply_incoming_suppresses_clipboard_event_that_arrives_during_windows_write()
+    {
+        // Regression: ISSUE-001 - Apply to Windows echoed incoming phone text back to the phone.
+        // Found by /qa on 2026-06-15.
+        // Report: user-reported phone QA in this thread.
+        var fixture = new Fixture();
+        var item = fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "incoming reentrant");
+        fixture.IncomingClipboard.OnSetText = text => fixture.Context.OnClipboardText(text);
+
+        fixture.Context.ApplyIncoming(item.IncomingId);
+
+        fixture.Window.State.SharedItems.Should().BeEmpty();
+        fixture.Window.State.PendingIncomingItems.Should().BeEmpty();
+        fixture.IncomingClipboard.Writes.Should().Equal("incoming reentrant");
+    }
+
+    [Fact]
+    public void Apply_incoming_suppresses_repeated_clipboard_echo_events_in_window()
+    {
+        var fixture = new Fixture();
+        var item = fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "repeated echo");
+
+        fixture.Context.ApplyIncoming(item.IncomingId);
+        fixture.Context.OnClipboardText("repeated echo");
+        fixture.Context.OnClipboardText("repeated echo");
+
+        fixture.Window.State.SharedItems.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Apply_incoming_stale_suppression_does_not_block_same_text_later()
+    {
+        var fixture = new Fixture();
+        var item = fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "same text later");
+
+        fixture.Context.ApplyIncoming(item.IncomingId);
+        fixture.Clock.Advance(
+            ClipboardApplicationContext.ClipboardApplyEchoSuppressionWindow + TimeSpan.FromMilliseconds(1));
+        fixture.Context.OnClipboardText("same text later");
+
+        fixture.Window.State.SharedItems.Should().ContainSingle()
+            .Which.Preview.Should().Be("same text later");
+    }
+
+    [Fact]
+    public void Apply_incoming_preserves_item_when_windows_clipboard_write_fails()
+    {
+        var fixture = new Fixture();
+        var item = fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "retry later");
+        fixture.IncomingClipboard.ThrowOnSetText = true;
+
+        var act = () => fixture.Context.ApplyIncoming(item.IncomingId);
+
+        act.Should().Throw<InvalidOperationException>();
+        fixture.IncomingClipboard.Writes.Should().BeEmpty();
+        fixture.Window.State.PendingIncomingItems.Should().ContainSingle()
+            .Which.ItemId.Should().Be(item.IncomingId);
+    }
+
+    [Fact]
+    public void Discard_incoming_clears_without_writing()
+    {
+        var fixture = new Fixture();
+        var item = fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "do not write");
+
+        fixture.Context.DiscardIncoming(item.IncomingId);
+
+        fixture.IncomingClipboard.Writes.Should().BeEmpty();
+        fixture.Window.State.PendingIncomingItems.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Revoke_one_clears_only_matching_incoming_items()
+    {
+        var first = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var second = Guid.Parse("22222222-2222-2222-2222-222222222222");
+        var fixture = new Fixture();
+        fixture.Context.EnqueueIncomingText(first, "Phone", "Safari", "first");
+        fixture.Context.EnqueueIncomingText(second, "Tablet", "Chrome", "second");
+
+        await fixture.Context.RevokeAsync(first);
+
+        fixture.Window.State.PendingIncomingItems.Should().ContainSingle()
+            .Which.AuthorizationId.Should().Be(second);
+    }
+
+    [Fact]
+    public async Task Revoke_all_and_shutdown_clear_all_incoming_items()
+    {
+        var fixture = new Fixture();
+        fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "first");
+
+        await fixture.Context.RevokeAllAsync();
+
+        fixture.Window.State.PendingIncomingItems.Should().BeEmpty();
+
+        fixture.Context.EnqueueIncomingText(
+            Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            "Tablet",
+            "Chrome",
+            "second");
+        await fixture.Context.ShutdownAsync();
+
+        fixture.Window.State.PendingIncomingItems.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Stale_apply_or_discard_after_cleanup_does_not_write()
+    {
+        var fixture = new Fixture();
+        var item = fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "stale");
+
+        fixture.Context.ClearIncomingForAuthorization(item.AuthorizationId);
+        fixture.Context.ApplyIncoming(item.IncomingId);
+        fixture.Context.DiscardIncoming(item.IncomingId);
+
+        fixture.IncomingClipboard.Writes.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Public_profile_status_displays_blocking_warning()
     {
         var fixture = new Fixture();
@@ -467,6 +759,50 @@ public sealed class ApplicationCompositionTests
         fixture.Window.State.SelectedDuration.Should().Be(AuthorizationDuration.Permanent);
         fixture.Window.State.BlockingWarning.Should().Be(
             "Permanent pairing is high risk. Revoke it when you no longer need this browser.");
+    }
+
+    [Fact]
+    public void Pairing_permission_defaults_to_read_only()
+    {
+        var fixture = new Fixture();
+
+        fixture.Context.ViewState.SelectedPermissions.Should().Be(AuthorizationPermissions.Read);
+        fixture.Context.ViewState.PermissionOptions.Select(item => item.DisplayName)
+            .Should().Equal("Read only", "Write only", "Read + Write");
+    }
+
+    [Fact]
+    public void Pairing_code_is_created_with_selected_permissions()
+    {
+        var fixture = new Fixture();
+        fixture.Sharing.State = RunningState(
+            "https://192.168.1.5:43127/",
+            FirewallRuleStatus.Unknown);
+
+        fixture.Context.CreatePairingCode();
+        fixture.PairingCodes.LastPermissions.Should().Be(AuthorizationPermissions.Read);
+
+        fixture.Context.SetAuthorizationPermissions(AuthorizationPermissions.ReadWrite);
+        fixture.Context.CreatePairingCode();
+
+        fixture.Context.ViewState.SelectedPermissions.Should().Be(AuthorizationPermissions.ReadWrite);
+        fixture.PairingCodes.LastPermissions.Should().Be(AuthorizationPermissions.ReadWrite);
+    }
+
+    [Fact]
+    public void Changing_pairing_permissions_invalidates_existing_pairing_code()
+    {
+        var fixture = new Fixture();
+        fixture.Sharing.State = RunningState(
+            "https://192.168.1.5:43127/",
+            FirewallRuleStatus.Unknown);
+        fixture.Context.SetAuthorizationPermissions(AuthorizationPermissions.ReadWrite);
+        fixture.Context.CreatePairingCode();
+
+        fixture.Context.SetAuthorizationPermissions(AuthorizationPermissions.Read);
+
+        fixture.PairingCodes.InvalidateCount.Should().Be(2);
+        fixture.Context.ViewState.Pairing.Should().BeNull();
     }
 
     [Fact]
@@ -539,12 +875,18 @@ public sealed class ApplicationCompositionTests
     {
         var fixture = new Fixture();
         fixture.Context.OnClipboardText("shared item");
+        fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "incoming should clear");
         fixture.Sharing.ThrowIncompleteShutdown = true;
 
         await fixture.Context.ShutdownAsync();
 
         fixture.Clipboard.ClearCount.Should().Be(0);
-        fixture.Notifications.Items.Should().ContainSingle(notification =>
+        fixture.Window.State.PendingIncomingItems.Should().BeEmpty();
+        fixture.Notifications.Items.Should().Contain(notification =>
             notification.Title == "Sharing did not stop cleanly" &&
             !notification.Body.Contains("shared item", StringComparison.Ordinal));
     }
@@ -582,7 +924,11 @@ public sealed class ApplicationCompositionTests
         Guid id,
         string label,
         DateTimeOffset? expiresAtUtc = null,
-        bool permanent = false) =>
+        bool permanent = false,
+        string? deviceName = null,
+        string? browserName = null,
+        DateTimeOffset? lastAccessedAtUtc = null,
+        AuthorizationPermissions permissions = AuthorizationPermissions.Read) =>
         new(
             id,
             label,
@@ -590,7 +936,11 @@ public sealed class ApplicationCompositionTests
             IPAddress.Parse("192.168.1.5"),
             permanent
                 ? null
-                : expiresAtUtc ?? new DateTimeOffset(2026, 6, 12, 5, 0, 0, TimeSpan.Zero));
+                : expiresAtUtc ?? new DateTimeOffset(2026, 6, 12, 5, 0, 0, TimeSpan.Zero),
+            deviceName,
+            browserName,
+            lastAccessedAtUtc,
+            permissions);
 
     private static byte[] CreatePngBytes()
     {
@@ -623,6 +973,8 @@ public sealed class ApplicationCompositionTests
 
         public RecordingClipboardContentStore Clipboard { get; }
 
+        public RecordingWindowsClipboardWriter IncomingClipboard { get; } = new();
+
         public RecordingQrCodeRenderer Qr { get; } = new();
 
         public FixedTimeProvider Clock { get; } =
@@ -641,6 +993,7 @@ public sealed class ApplicationCompositionTests
                     PairingCodes,
                     Authorizations,
                     Clipboard,
+                    IncomingClipboard,
                     Qr,
                     Clock));
         }
@@ -684,6 +1037,12 @@ public sealed class ApplicationCompositionTests
             remove { }
         }
 
+        public event EventHandler<AuthorizationPermissions>? AuthorizationPermissionsChanged
+        {
+            add { }
+            remove { }
+        }
+
         public event EventHandler<Guid>? RevokeAuthorizationRequested
         {
             add { }
@@ -709,6 +1068,18 @@ public sealed class ApplicationCompositionTests
         }
 
         public event EventHandler<Guid>? WithdrawSharedRequested
+        {
+            add { }
+            remove { }
+        }
+
+        public event EventHandler<Guid>? ApplyIncomingRequested
+        {
+            add { }
+            remove { }
+        }
+
+        public event EventHandler<Guid>? DiscardIncomingRequested
         {
             add { }
             remove { }
@@ -750,14 +1121,24 @@ public sealed class ApplicationCompositionTests
     {
         public AuthorizationDuration? LastDuration { get; private set; }
 
-        public PairingCodeSnapshot Create(AuthorizationDuration duration)
+        public AuthorizationPermissions? LastPermissions { get; private set; }
+
+        public int InvalidateCount { get; private set; }
+
+        public PairingCodeSnapshot Create(
+            AuthorizationDuration duration,
+            AuthorizationPermissions permissions)
         {
             LastDuration = duration;
+            LastPermissions = permissions;
             return
             new(
                 "pair-code",
-                new DateTimeOffset(2026, 6, 12, 0, 2, 0, TimeSpan.Zero));
+                new DateTimeOffset(2026, 6, 12, 0, 2, 0, TimeSpan.Zero),
+                permissions);
         }
+
+        public void Invalidate() => InvalidateCount++;
     }
 
     private sealed class FakeSharingController : ISharingController
@@ -935,6 +1316,26 @@ public sealed class ApplicationCompositionTests
         }
     }
 
+    private sealed class RecordingWindowsClipboardWriter : IWindowsClipboardWriter
+    {
+        public List<string> Writes { get; } = [];
+
+        public Action<string>? OnSetText { get; set; }
+
+        public bool ThrowOnSetText { get; set; }
+
+        public void SetText(string text)
+        {
+            if (ThrowOnSetText)
+            {
+                throw new InvalidOperationException("clipboard busy");
+            }
+
+            OnSetText?.Invoke(text);
+            Writes.Add(text);
+        }
+    }
+
     private static AuthorizationMutationResult MutationResult(
         AuthorizationFailure failure,
         ImmutableArray<AuthorizationMetadata> authorizations)
@@ -948,7 +1349,11 @@ public sealed class ApplicationCompositionTests
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => utcNow;
+        private DateTimeOffset _utcNow = utcNow;
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+
+        public void Advance(TimeSpan duration) => _utcNow += duration;
     }
 
     private sealed class DisposableProbe(Action onDispose) : IDisposable

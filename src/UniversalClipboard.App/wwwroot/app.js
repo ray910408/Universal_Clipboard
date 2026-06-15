@@ -26,6 +26,16 @@ const CONTRACT = Object.freeze(
     "confirmed": "Copied",
     "fallback": "Copy requested - verify, or long-press and choose Copy"
   },
+  "incoming": {
+    "endpoint": "/clip-api/incoming-text",
+    "storageKey": "uc.permission",
+    "readPermissions": ["read", "readWrite"],
+    "writePermissions": ["write", "readWrite"],
+    "disabled": "Re-pair from Windows with Write enabled.",
+    "queued": "Pending in Windows tray.",
+    "empty": "Enter text before sending.",
+    "failed": "Unable to send. Check pairing and try again."
+  },
   "session": {
     "storageKey": "uc.sessionProof",
     "headerName": "X-Clip-Session"
@@ -42,6 +52,10 @@ const fallbackText = document.querySelector("#copy-fallback");
 const copyStatus = document.querySelector("#copy-status");
 const pairingMessage = document.querySelector("#pairing-message");
 const errorMessage = document.querySelector("#error-message");
+const incomingText = document.querySelector("#incoming-text");
+const incomingSend = document.querySelector("#incoming-send");
+const incomingStatus = document.querySelector("#incoming-status");
+const incomingPermission = document.querySelector("#incoming-permission");
 
 let instanceId = null;
 let version = null;
@@ -78,6 +92,8 @@ function resetFeed() {
   stopPolling();
   clearClipboardDom();
   sessionStorage.removeItem(CONTRACT.session.storageKey);
+  sessionStorage.removeItem(CONTRACT.incoming.storageKey);
+  updateIncomingPermission(null);
   instanceId = null;
   version = null;
 }
@@ -127,6 +143,39 @@ function schedulePoll() {
     pollTimer = null;
     void pollClips(false);
   }, CONTRACT.pollIntervalMs);
+}
+
+function sessionHeaders() {
+  const sessionProof = sessionStorage.getItem(CONTRACT.session.storageKey);
+  return sessionProof === null
+    ? {}
+    : { [CONTRACT.session.headerName]: sessionProof };
+}
+
+function canSendToWindows(permission) {
+  return CONTRACT.incoming.writePermissions.includes(permission);
+}
+
+function canReadFromWindows(permission) {
+  return permission === null || CONTRACT.incoming.readPermissions.includes(permission);
+}
+
+function updateIncomingPermission(permission) {
+  const allowed = canSendToWindows(permission);
+  incomingText.disabled = !allowed;
+  incomingSend.disabled = !allowed;
+  incomingPermission.textContent = allowed ? "Write enabled" : "Read only";
+  if (!allowed) {
+    incomingStatus.textContent = CONTRACT.incoming.disabled;
+  } else if (incomingStatus.textContent === CONTRACT.incoming.disabled) {
+    incomingStatus.textContent = "";
+  }
+}
+
+function clearStoredSession() {
+  sessionStorage.removeItem(CONTRACT.session.storageKey);
+  sessionStorage.removeItem(CONTRACT.incoming.storageKey);
+  updateIncomingPermission(null);
 }
 
 function relativeTime(value) {
@@ -229,16 +278,20 @@ async function pollClips(forceFull) {
     return;
   }
 
+  if (!canReadFromWindows(sessionStorage.getItem(CONTRACT.incoming.storageKey))) {
+    instanceId = null;
+    version = null;
+    renderItems([]);
+    return;
+  }
+
   if (forceFull) {
     instanceId = null;
     version = null;
   }
 
   const requestController = new AbortController();
-  const sessionProof = sessionStorage.getItem(CONTRACT.session.storageKey);
-  const headers = sessionProof === null
-    ? {}
-    : { [CONTRACT.session.headerName]: sessionProof };
+  const headers = sessionHeaders();
   activeRequest = requestController;
   try {
     const response = await fetch(buildClipsUrl(), {
@@ -250,10 +303,17 @@ async function pollClips(forceFull) {
     });
 
     if (response.status === 401) {
-      sessionStorage.removeItem(CONTRACT.session.storageKey);
+      clearStoredSession();
       applyLifecycleTransition("unauthorized");
       pairingMessage.textContent =
         "Pairing expired or was revoked. Generate a new code on Windows.";
+      return;
+    }
+
+    if (response.status === 403) {
+      instanceId = null;
+      version = null;
+      renderItems([]);
       return;
     }
 
@@ -287,7 +347,43 @@ async function pollClips(forceFull) {
   }
 }
 
+function detectBrowserName() {
+  const userAgent = navigator.userAgent;
+  if (userAgent.includes("CriOS")) {
+    return "Chrome";
+  }
+
+  if (userAgent.includes("FxiOS")) {
+    return "Firefox";
+  }
+
+  if (userAgent.includes("EdgiOS")) {
+    return "Edge";
+  }
+
+  if (userAgent.includes("Safari")) {
+    return "Safari";
+  }
+
+  return "Browser";
+}
+
+function detectDeviceName() {
+  const userAgent = navigator.userAgent;
+  if (userAgent.includes("iPad")) {
+    return "iPad";
+  }
+
+  if (userAgent.includes("iPhone")) {
+    return "iPhone";
+  }
+
+  return "Mobile device";
+}
+
 async function postPairingCode(pairingCode) {
+  const deviceName = detectDeviceName();
+  const browserName = detectBrowserName();
   return fetch("/clip-api/pair/exchange", {
     method: "POST",
     credentials: "same-origin",
@@ -297,9 +393,60 @@ async function postPairingCode(pairingCode) {
     },
     body: JSON.stringify({
       code: pairingCode,
-      label: "iPhone Safari"
+      label: `${deviceName} ${browserName}`,
+      deviceName,
+      browserName
     })
   });
+}
+
+async function sendIncomingText() {
+  const text = incomingText.value;
+  if (text.length === 0) {
+    incomingStatus.textContent = CONTRACT.incoming.empty;
+    return;
+  }
+
+  incomingSend.disabled = true;
+  incomingStatus.textContent = "";
+  try {
+    const response = await fetch(CONTRACT.incoming.endpoint, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        ...sessionHeaders()
+      },
+      body: JSON.stringify({ text })
+    });
+
+    if (response.status === 401) {
+      clearStoredSession();
+      applyLifecycleTransition("unauthorized");
+      pairingMessage.textContent =
+        "Pairing expired or was revoked. Generate a new code on Windows.";
+      return;
+    }
+
+    if (response.status === 403) {
+      sessionStorage.setItem(CONTRACT.incoming.storageKey, "read");
+      updateIncomingPermission("read");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error("incoming send failed");
+    }
+
+    incomingText.value = "";
+    incomingStatus.textContent = CONTRACT.incoming.queued;
+  } catch {
+    incomingStatus.textContent = CONTRACT.incoming.failed;
+  } finally {
+    incomingSend.disabled = !canSendToWindows(
+      sessionStorage.getItem(CONTRACT.incoming.storageKey));
+  }
 }
 
 async function exchangePairingFragment() {
@@ -331,8 +478,11 @@ async function exchangePairingFragment() {
     }
 
     sessionStorage.setItem(CONTRACT.session.storageKey, pairing.sessionProof);
+    sessionStorage.setItem(CONTRACT.incoming.storageKey, pairing.permission || "read");
+    updateIncomingPermission(pairing.permission || "read");
     await pollClips(true);
   } catch {
+    clearStoredSession();
     applyLifecycleTransition("unauthorized");
     pairingMessage.textContent =
       "Pairing failed. Generate a new code on Windows and scan it again.";
@@ -351,6 +501,7 @@ async function refreshAfterPageShow() {
 
   refreshInProgress = true;
   try {
+    updateIncomingPermission(sessionStorage.getItem(CONTRACT.incoming.storageKey));
     if (applyLifecycleTransition("pageshow")) {
       await pollClips(true);
     }
@@ -384,3 +535,9 @@ window.addEventListener("pagehide", () => {
 window.addEventListener(CONTRACT.bootstrapEvent, () => {
   void refreshVisiblePage();
 });
+
+incomingSend.addEventListener("click", () => {
+  void sendIncomingText();
+});
+
+updateIncomingPermission(sessionStorage.getItem(CONTRACT.incoming.storageKey));

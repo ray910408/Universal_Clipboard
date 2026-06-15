@@ -24,7 +24,10 @@ public sealed class SessionTokenService
     public SessionTokenIssue Issue(
         string label,
         IPAddress boundHostIpv4,
-        AuthorizationDuration duration)
+        AuthorizationDuration duration,
+        AuthorizationPermissions permissions = AuthorizationPermissions.Read,
+        string? deviceName = null,
+        string? browserName = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(label);
         ArgumentNullException.ThrowIfNull(boundHostIpv4);
@@ -32,6 +35,11 @@ public sealed class SessionTokenService
         if (boundHostIpv4.AddressFamily != AddressFamily.InterNetwork)
         {
             throw new ArgumentException("Authorization bindings must use IPv4.", nameof(boundHostIpv4));
+        }
+
+        if (!IsValidPermissions(permissions))
+        {
+            throw new ArgumentException("Authorization permissions must include Read or Write.", nameof(permissions));
         }
 
         Span<byte> authorizationIdBytes = stackalloc byte[AuthorizationIdByteCount];
@@ -51,6 +59,10 @@ public sealed class SessionTokenService
             createdAtUtc,
             boundHostIpv4,
             GetExpiry(createdAtUtc, duration),
+            deviceName,
+            browserName,
+            null,
+            permissions,
             ImmutableArray.Create(SHA256.HashData(tokenBytes)),
             ImmutableArray.Create(SHA256.HashData(proofBytes)));
 
@@ -103,4 +115,8 @@ public sealed class SessionTokenService
             AuthorizationDuration.Permanent => null,
             _ => throw new ArgumentOutOfRangeException(nameof(duration)),
         };
+
+    internal static bool IsValidPermissions(AuthorizationPermissions permissions) =>
+        permissions is not AuthorizationPermissions.None &&
+        (permissions & ~AuthorizationPermissions.ReadWrite) == 0;
 }

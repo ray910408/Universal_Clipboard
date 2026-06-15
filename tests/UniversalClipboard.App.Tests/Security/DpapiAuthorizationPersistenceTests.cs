@@ -25,8 +25,55 @@ public sealed class DpapiAuthorizationPersistenceTests : IDisposable
         var actual = await persistence.LoadAsync();
 
         actual.Should().BeEquivalentTo(expected);
+        actual.Authorizations[0].DeviceName.Should().Be("Kenneth's iPhone");
+        actual.Authorizations[0].BrowserName.Should().Be("Safari");
+        actual.Authorizations[0].LastAccessedAtUtc.Should().Be(
+            new DateTimeOffset(2026, 6, 12, 2, 3, 4, TimeSpan.Zero));
+        actual.Authorizations[0].Permissions.Should().Be(AuthorizationPermissions.ReadWrite);
         actual.Authorizations[0].SessionProofDigest.Should().Equal(
             expected.Authorizations[0].SessionProofDigest);
+    }
+
+    [Fact]
+    public async Task Legacy_version2_document_loads_as_read_only_with_no_last_access()
+    {
+        var files = new MemoryAuthorizationFileOperations();
+        var persistence = new DpapiAuthorizationPersistence(
+            "auth.bin",
+            files,
+            new TestDataProtector());
+        files.WriteAllBytesAndFlush("auth.bin", CreateLegacyVersion2DocumentWithoutMetadata());
+
+        var loaded = await persistence.LoadAsync();
+
+        loaded.Authorizations.Should().ContainSingle();
+        var authorization = loaded.Authorizations[0];
+        authorization.Permissions.Should().Be(AuthorizationPermissions.Read);
+        authorization.DeviceName.Should().BeNull();
+        authorization.BrowserName.Should().BeNull();
+        authorization.LastAccessedAtUtc.Should().BeNull();
+        authorization.SessionProofDigest.IsDefaultOrEmpty.Should().BeFalse();
+        files.Exists("auth.bin.corrupt").Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(4)]
+    public async Task Version3_document_with_invalid_permissions_fails_closed_and_is_renamed_corrupt(
+        int invalidPermissions)
+    {
+        var files = new MemoryAuthorizationFileOperations();
+        var persistence = new DpapiAuthorizationPersistence(
+            "auth.bin",
+            files,
+            new TestDataProtector());
+        files.WriteAllBytesAndFlush("auth.bin", CreateVersion3DocumentWithPermissions(invalidPermissions));
+
+        var loaded = await persistence.LoadAsync();
+
+        loaded.Should().BeEquivalentTo(AuthorizationDocument.Empty);
+        files.Exists("auth.bin").Should().BeFalse();
+        files.Exists("auth.bin.corrupt").Should().BeTrue();
     }
 
     [Fact]
@@ -176,9 +223,91 @@ public sealed class DpapiAuthorizationPersistenceTests : IDisposable
             new DateTimeOffset(2026, 6, 12, 1, 2, 3, TimeSpan.Zero),
             IPAddress.Parse("192.168.1.25"),
             new DateTimeOffset(2026, 6, 12, 6, 2, 3, TimeSpan.Zero),
+            "Kenneth's iPhone",
+            "Safari",
+            new DateTimeOffset(2026, 6, 12, 2, 3, 4, TimeSpan.Zero),
+            AuthorizationPermissions.ReadWrite,
             ImmutableArray.Create(Enumerable.Range(1, 32).Select(value => (byte)value).ToArray()),
             ImmutableArray.Create(Enumerable.Range(33, 32).Select(value => (byte)value).ToArray()));
         return new AuthorizationDocument([record]);
+    }
+
+    private static byte[] CreateVersion3DocumentWithPermissions(int permissions)
+    {
+        var document = CreateDocument();
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        writer.Write(3);
+        writer.Write(document.Authorizations.Length);
+
+        foreach (var authorization in document.Authorizations)
+        {
+            writer.Write(authorization.Id.ToByteArray());
+            writer.Write(authorization.Label);
+            writer.Write(authorization.CreatedAtUtc.UtcTicks);
+            writer.Write(authorization.BoundHostIpv4.GetAddressBytes());
+            writer.Write(authorization.ExpiresAtUtc.HasValue);
+            if (authorization.ExpiresAtUtc is { } expiresAtUtc)
+            {
+                writer.Write(expiresAtUtc.UtcTicks);
+            }
+
+            writer.Write(authorization.TokenDigest.Length);
+            writer.Write(authorization.TokenDigest.AsSpan());
+            writer.Write(authorization.SessionProofDigest.Length);
+            writer.Write(authorization.SessionProofDigest.AsSpan());
+            WriteNullableString(writer, authorization.DeviceName);
+            WriteNullableString(writer, authorization.BrowserName);
+            writer.Write(authorization.LastAccessedAtUtc.HasValue);
+            if (authorization.LastAccessedAtUtc is { } lastAccessedAtUtc)
+            {
+                writer.Write(lastAccessedAtUtc.UtcTicks);
+            }
+
+            writer.Write(permissions);
+        }
+
+        writer.Flush();
+        return stream.ToArray();
+    }
+
+    private static byte[] CreateLegacyVersion2DocumentWithoutMetadata()
+    {
+        var document = CreateDocument();
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        writer.Write(2);
+        writer.Write(document.Authorizations.Length);
+
+        foreach (var authorization in document.Authorizations)
+        {
+            writer.Write(authorization.Id.ToByteArray());
+            writer.Write(authorization.Label);
+            writer.Write(authorization.CreatedAtUtc.UtcTicks);
+            writer.Write(authorization.BoundHostIpv4.GetAddressBytes());
+            writer.Write(authorization.ExpiresAtUtc.HasValue);
+            if (authorization.ExpiresAtUtc is { } expiresAtUtc)
+            {
+                writer.Write(expiresAtUtc.UtcTicks);
+            }
+
+            writer.Write(authorization.TokenDigest.Length);
+            writer.Write(authorization.TokenDigest.AsSpan());
+            writer.Write(authorization.SessionProofDigest.Length);
+            writer.Write(authorization.SessionProofDigest.AsSpan());
+        }
+
+        writer.Flush();
+        return stream.ToArray();
+    }
+
+    private static void WriteNullableString(BinaryWriter writer, string? value)
+    {
+        writer.Write(value is not null);
+        if (value is not null)
+        {
+            writer.Write(value);
+        }
     }
 
     private static byte[] CreateLegacyVersion1DocumentWithoutProofDigest()

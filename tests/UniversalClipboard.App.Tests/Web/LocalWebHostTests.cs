@@ -91,6 +91,82 @@ public sealed class LocalWebHostTests
     }
 
     [Fact]
+    public async Task Pair_success_stores_permissions_device_and_browser_metadata()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var code = fixture.PairingCodes
+            .Create(AuthorizationDuration.FiveHours, AuthorizationPermissions.ReadWrite)
+            .Value;
+
+        var response = await fixture.PostPairAsync(
+            new
+            {
+                code,
+                label = "  My iPhone  ",
+                deviceName = "  Kenneth's iPhone  ",
+                browserName = "  Safari  ",
+            });
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var authorization = fixture.Coordinator.List().Single();
+        authorization.Label.Should().Be("My iPhone");
+        authorization.DeviceName.Should().Be("Kenneth's iPhone");
+        authorization.BrowserName.Should().Be("Safari");
+        authorization.Permissions.Should().Be(AuthorizationPermissions.ReadWrite);
+        var json = await ReadJsonAsync(response);
+        json.RootElement.GetProperty("permission").GetString().Should().Be("readWrite");
+        json.RootElement.GetProperty("deviceName").GetString().Should().Be("Kenneth's iPhone");
+        json.RootElement.GetProperty("browserName").GetString().Should().Be("Safari");
+    }
+
+    [Fact]
+    public async Task Pair_omitted_permission_defaults_to_read_only()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+
+        var response = await fixture.PostPairAsync(
+            fixture.PairingCodes.Create().Value,
+            "Phone");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        fixture.Coordinator.List().Single().Permissions.Should().Be(AuthorizationPermissions.Read);
+        var json = await ReadJsonAsync(response);
+        json.RootElement.GetProperty("permission").GetString().Should().Be("read");
+    }
+
+    [Fact]
+    public async Task Pair_mobile_permission_field_is_rejected_and_cannot_escalate()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var code = fixture.PairingCodes.Create().Value;
+
+        var response = await fixture.PostPairAsync(
+            new
+            {
+                code,
+                label = "Phone",
+                permission = "readWrite",
+            });
+
+        await AssertErrorAsync(response, HttpStatusCode.BadRequest, "invalid_request");
+        fixture.Coordinator.List().Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("{\"code\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"label\":\"Phone\",\"deviceName\":\"\\uD800\"}")]
+    [InlineData("{\"code\":\"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcY\",\"label\":\"Phone\",\"browserName\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}")]
+    public async Task Pair_invalid_metadata_returns_400(string body)
+    {
+        await using var fixture = await HostFixture.StartAsync();
+
+        var response = await fixture.Client.PostAsync(
+            "/clip-api/pair/exchange",
+            new StringContent(body, Encoding.UTF8, "application/json"));
+
+        await AssertErrorAsync(response, HttpStatusCode.BadRequest, "invalid_request");
+    }
+
+    [Fact]
     public async Task Pair_exchange_uses_duration_bound_to_generated_code()
     {
         var duration = AuthorizationDuration.OneHour;
@@ -281,6 +357,141 @@ public sealed class LocalWebHostTests
         await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
         response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
         response.Headers.GetValues("Set-Cookie").Single().Should().Contain("path=/clip-api");
+    }
+
+    [Fact]
+    public async Task Clips_accepts_read_only_authorization()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        fixture.History.Add("shared");
+        var session = await fixture.PairAsync("read");
+
+        var response = await fixture.GetClipsAsync(session);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task Clips_returns_403_for_write_only_without_clearing_cookie()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        fixture.History.Add("shared");
+        var session = await fixture.PairAsync("write");
+
+        var response = await fixture.GetClipsAsync(session);
+
+        await AssertErrorAsync(response, HttpStatusCode.Forbidden, "forbidden");
+        response.Headers.TryGetValues("Set-Cookie", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Incoming_text_accepts_write_authorization_and_returns_id()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var session = await fixture.PairAsync("write");
+
+        var response = await fixture.PostIncomingTextAsync(session, "from phone");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var json = await ReadJsonAsync(response);
+        json.RootElement.GetProperty("accepted").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("incomingId").GetString().Should().HaveLength(22);
+        fixture.Incoming.Items.Should().ContainSingle()
+            .Which.Text.Should().Be("from phone");
+    }
+
+    [Fact]
+    public async Task Incoming_text_returns_403_for_read_only_without_clearing_cookie()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var session = await fixture.PairAsync("read");
+
+        var response = await fixture.PostIncomingTextAsync(session, "from phone");
+
+        await AssertErrorAsync(response, HttpStatusCode.Forbidden, "forbidden");
+        response.Headers.TryGetValues("Set-Cookie", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Incoming_text_unauthenticated_returns_401_and_clears_cookie_when_present()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/clip-api/incoming-text")
+        {
+            Content = JsonContent.Create(new { text = "from phone" }),
+        };
+        request.Headers.Add("Cookie", "clip_session=invalid");
+
+        var response = await fixture.Client.SendAsync(request);
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+    }
+
+    [Fact]
+    public async Task Incoming_text_unauthenticated_wrong_content_type_returns_401_before_validation()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/clip-api/incoming-text")
+        {
+            Content = new StringContent("not json", Encoding.UTF8, "text/plain"),
+        };
+        request.Headers.Add("Cookie", "clip_session=invalid");
+
+        var response = await fixture.Client.SendAsync(request);
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+    }
+
+    [Theory]
+    [InlineData("text/plain", "{\"text\":\"ok\"}", HttpStatusCode.UnsupportedMediaType, "unsupported_media_type")]
+    [InlineData("application/json", "{", HttpStatusCode.BadRequest, "invalid_request")]
+    [InlineData("application/json", "{}", HttpStatusCode.BadRequest, "invalid_request")]
+    [InlineData("application/json", "{\"text\":123}", HttpStatusCode.BadRequest, "invalid_request")]
+    [InlineData("application/json", "{\"text\":\"\"}", HttpStatusCode.BadRequest, "invalid_request")]
+    [InlineData("application/json", "{\"text\":\"\\uD800\"}", HttpStatusCode.BadRequest, "invalid_request")]
+    public async Task Incoming_text_invalid_requests_are_rejected(
+        string mediaType,
+        string body,
+        HttpStatusCode status,
+        string code)
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var session = await fixture.PairAsync("write");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/clip-api/incoming-text")
+        {
+            Content = new StringContent(body, Encoding.UTF8, mediaType),
+        };
+        AddSession(request, session);
+
+        var response = await fixture.Client.SendAsync(request);
+
+        await AssertErrorAsync(response, status, code);
+    }
+
+    [Fact]
+    public async Task Incoming_text_oversized_text_is_rejected()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var session = await fixture.PairAsync("write");
+
+        var response = await fixture.PostIncomingTextAsync(
+            session,
+            new string('x', StrictUtf8TextValidator.MaxUtf8Bytes + 1));
+
+        await AssertErrorAsync(response, HttpStatusCode.RequestEntityTooLarge, "request_too_large");
+    }
+
+    [Fact]
+    public async Task Incoming_text_method_not_allowed_allows_post()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+
+        var response = await fixture.Client.GetAsync("/clip-api/incoming-text");
+
+        await AssertErrorAsync(response, HttpStatusCode.MethodNotAllowed, "method_not_allowed");
+        response.Content.Headers.Allow.Should().Contain("POST");
     }
 
     [Fact]
@@ -882,6 +1093,7 @@ public sealed class LocalWebHostTests
             AuthorizationCoordinator coordinator,
             PairingCodeManager pairingCodes,
             ClipboardHistory history,
+            RecordingIncomingTextSink incoming,
             ManualTimeProvider clock,
             AuthorizationDuration pairingDuration)
         {
@@ -889,6 +1101,7 @@ public sealed class LocalWebHostTests
             Coordinator = coordinator;
             PairingCodes = pairingCodes;
             History = history;
+            Incoming = incoming;
             Clock = clock;
             PairingDuration = pairingDuration;
             Client = new HttpClient(new HttpClientHandler
@@ -909,6 +1122,8 @@ public sealed class LocalWebHostTests
         public PairingCodeManager PairingCodes { get; }
 
         public ClipboardHistory History { get; }
+
+        public RecordingIncomingTextSink Incoming { get; }
 
         public ManualTimeProvider Clock { get; }
 
@@ -963,6 +1178,7 @@ public sealed class LocalWebHostTests
                     builder.AddProvider(loggerProvider);
                 }
             });
+            var incoming = new RecordingIncomingTextSink();
             var host = new LocalWebHost(
                 Endpoint,
                 authorizationServiceFactory?.Invoke(coordinator) ?? coordinator,
@@ -971,21 +1187,47 @@ public sealed class LocalWebHostTests
                 clock,
                 loggerFactory,
                 responseWriter,
-                timeouts);
-            return new HostFixture(host, coordinator, pairingCodes, history, clock, pairingDuration);
+                timeouts,
+                incoming);
+            return new HostFixture(host, coordinator, pairingCodes, history, incoming, clock, pairingDuration);
         }
 
         public async Task<HttpResponseMessage> PostPairAsync(string code, string label) =>
+            await PostPairAsync(new { code, label });
+
+        public async Task<HttpResponseMessage> PostPairAsync(object body) =>
             await Client.PostAsync(
                 "/clip-api/pair/exchange",
-                JsonContent.Create(new { code, label }));
+                JsonContent.Create(body));
 
-        public async Task<SessionPair> PairAsync()
+        public async Task<SessionPair> PairAsync(string permission = "read")
         {
-            var response = await PostPairAsync(PairingCodes.Create(PairingDuration).Value, "Phone");
+            var boundPermission = permission switch
+            {
+                "read" => AuthorizationPermissions.Read,
+                "write" => AuthorizationPermissions.Write,
+                "readWrite" => AuthorizationPermissions.ReadWrite,
+                _ => throw new ArgumentOutOfRangeException(nameof(permission)),
+            };
+            var response = await PostPairAsync(
+                new
+                {
+                    code = PairingCodes.Create(PairingDuration, boundPermission).Value,
+                    label = "Phone",
+                });
             response.EnsureSuccessStatusCode();
             var proof = (await ReadJsonAsync(response)).RootElement.GetProperty("sessionProof").GetString()!;
             return new SessionPair(GetCookie(response), proof);
+        }
+
+        public Task<HttpResponseMessage> PostIncomingTextAsync(SessionPair session, string text)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, "/clip-api/incoming-text")
+            {
+                Content = JsonContent.Create(new { text }),
+            };
+            AddSession(request, session);
+            return Client.SendAsync(request);
         }
 
         public Task<HttpResponseMessage> GetClipsAsync(
@@ -1050,6 +1292,26 @@ public sealed class LocalWebHostTests
         }
 
         public void Release() => _release.TrySetResult();
+    }
+
+    private sealed class RecordingIncomingTextSink : IIncomingTextSink
+    {
+        public List<IncomingTextItem> Items { get; } = [];
+
+        public ValueTask<IncomingTextItem> EnqueueAsync(
+            IncomingTextRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            var item = new IncomingTextItem(
+                Guid.NewGuid(),
+                request.Authorization.Id,
+                request.Authorization.DeviceName,
+                request.Authorization.BrowserName,
+                request.Text,
+                DateTimeOffset.UtcNow);
+            Items.Add(item);
+            return ValueTask.FromResult(item);
+        }
     }
 
     private sealed class CancellationAwareClipResponseWriter : IClipResponseWriter

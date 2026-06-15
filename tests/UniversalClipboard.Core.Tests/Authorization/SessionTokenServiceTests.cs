@@ -36,6 +36,10 @@ public sealed class SessionTokenServiceTests
         issue.Authorization.CreatedAtUtc.Should().Be(now);
         issue.Authorization.BoundHostIpv4.Should().Be(IPAddress.Parse("192.168.1.20"));
         issue.Authorization.ExpiresAtUtc.Should().Be(expectedLifetime is null ? null : now + expectedLifetime);
+        issue.Authorization.DeviceName.Should().BeNull();
+        issue.Authorization.BrowserName.Should().BeNull();
+        issue.Authorization.LastAccessedAtUtc.Should().BeNull();
+        issue.Authorization.Permissions.Should().Be(AuthorizationPermissions.Read);
         issue.Authorization.TokenDigest.Should().Equal(
             SHA256.HashData(Enumerable.Range(16, 32).Select(value => (byte)value).ToArray()));
         issue.Authorization.TokenDigest.Should().HaveCount(32);
@@ -44,6 +48,49 @@ public sealed class SessionTokenServiceTests
         issue.Authorization.SessionProofDigest.Should().HaveCount(32);
         issue.SessionProof.Should().HaveLength(43);
         entropy.RequestedLengths.Should().Equal(16, 32, 32);
+    }
+
+    [Fact]
+    public void Issue_preserves_explicit_read_write_permissions_and_metadata()
+    {
+        var now = new DateTimeOffset(2026, 6, 12, 8, 30, 0, TimeSpan.Zero);
+        var service = new SessionTokenService(
+            new ManualTimeProvider(now),
+            new QueueEntropySource(new byte[16], new byte[32], new byte[32]));
+
+        var issue = service.Issue(
+            "Office browser",
+            IPAddress.Parse("192.168.1.20"),
+            AuthorizationDuration.OneHour,
+            AuthorizationPermissions.ReadWrite,
+            deviceName: "Kenneth's iPhone",
+            browserName: "Safari");
+
+        issue.Authorization.Permissions.Should().Be(AuthorizationPermissions.ReadWrite);
+        issue.Authorization.DeviceName.Should().Be("Kenneth's iPhone");
+        issue.Authorization.BrowserName.Should().Be("Safari");
+        issue.Authorization.LastAccessedAtUtc.Should().BeNull();
+        var metadata = new AuthorizationMetadata(
+            issue.Authorization.Id,
+            issue.Authorization.Label,
+            issue.Authorization.CreatedAtUtc,
+            issue.Authorization.BoundHostIpv4,
+            issue.Authorization.ExpiresAtUtc,
+            issue.Authorization.DeviceName,
+            issue.Authorization.BrowserName,
+            issue.Authorization.LastAccessedAtUtc,
+            issue.Authorization.Permissions);
+        metadata.Should().BeEquivalentTo(
+            new AuthorizationMetadata(
+                issue.Authorization.Id,
+                "Office browser",
+                now,
+                IPAddress.Parse("192.168.1.20"),
+                now.AddHours(1),
+                "Kenneth's iPhone",
+                "Safari",
+                null,
+                AuthorizationPermissions.ReadWrite));
     }
 
     [Fact]

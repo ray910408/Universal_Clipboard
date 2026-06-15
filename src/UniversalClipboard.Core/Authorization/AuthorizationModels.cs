@@ -12,12 +12,25 @@ public enum AuthorizationDuration
     Permanent,
 }
 
+[Flags]
+public enum AuthorizationPermissions
+{
+    None = 0,
+    Read = 1,
+    Write = 2,
+    ReadWrite = Read | Write,
+}
+
 public sealed record AuthorizationRecord(
     Guid Id,
     string Label,
     DateTimeOffset CreatedAtUtc,
     IPAddress BoundHostIpv4,
     DateTimeOffset? ExpiresAtUtc,
+    string? DeviceName,
+    string? BrowserName,
+    DateTimeOffset? LastAccessedAtUtc,
+    AuthorizationPermissions Permissions,
     ImmutableArray<byte> TokenDigest,
     ImmutableArray<byte> SessionProofDigest = default);
 
@@ -36,7 +49,11 @@ public sealed record AuthorizationMetadata(
     string Label,
     DateTimeOffset CreatedAtUtc,
     IPAddress BoundHostIpv4,
-    DateTimeOffset? ExpiresAtUtc)
+    DateTimeOffset? ExpiresAtUtc,
+    string? DeviceName,
+    string? BrowserName,
+    DateTimeOffset? LastAccessedAtUtc,
+    AuthorizationPermissions Permissions)
 {
     internal static AuthorizationMetadata FromRecord(AuthorizationRecord authorization) =>
         new(
@@ -44,7 +61,11 @@ public sealed record AuthorizationMetadata(
             authorization.Label,
             authorization.CreatedAtUtc,
             authorization.BoundHostIpv4,
-            authorization.ExpiresAtUtc);
+            authorization.ExpiresAtUtc,
+            authorization.DeviceName,
+            authorization.BrowserName,
+            authorization.LastAccessedAtUtc,
+            authorization.Permissions);
 }
 
 public sealed record AuthorizationAdministrationSnapshot(
@@ -64,17 +85,21 @@ public enum AuthorizationFailure
     Canceled,
     QueueFull,
     Disposed,
+    PermissionDenied,
 }
 
 public sealed record ExchangeAuthorizationRequest(
     string PairingCode,
     string Label,
     IPAddress BoundHostIpv4,
-    AuthorizationDuration Duration)
+    AuthorizationDuration Duration,
+    string? DeviceName = null,
+    string? BrowserName = null)
 {
     public override string ToString() =>
         $"{nameof(ExchangeAuthorizationRequest)} {{ PairingCode = [REDACTED], " +
-        $"Label = {Label}, BoundHostIpv4 = {BoundHostIpv4}, Duration = {Duration} }}";
+        $"Label = {Label}, BoundHostIpv4 = {BoundHostIpv4}, Duration = {Duration}, " +
+        $"DeviceName = {DeviceName}, BrowserName = {BrowserName} }}";
 }
 
 public sealed class ExchangeAuthorizationResult
@@ -120,14 +145,19 @@ public sealed record AcquireLeaseRequest(
     Guid AuthorizationId,
     SessionToken Token,
     IPAddress HostIpv4,
-    string SessionProof = "");
+    string SessionProof = "",
+    AuthorizationPermissions RequiredPermission = AuthorizationPermissions.Read);
 
 public sealed class AcquireLeaseResult
 {
-    internal AcquireLeaseResult(AuthorizationFailure failure, AuthorizationLease? lease)
+    internal AcquireLeaseResult(
+        AuthorizationFailure failure,
+        AuthorizationLease? lease,
+        AuthorizationMetadata? authorization = null)
     {
         Failure = failure;
         Lease = lease;
+        Authorization = authorization;
     }
 
     public bool Succeeded => Failure == AuthorizationFailure.None;
@@ -135,6 +165,8 @@ public sealed class AcquireLeaseResult
     public AuthorizationFailure Failure { get; }
 
     public AuthorizationLease? Lease { get; }
+
+    public AuthorizationMetadata? Authorization { get; }
 }
 
 public sealed class AuthorizationMutationResult
@@ -174,11 +206,13 @@ public sealed class PairingCode
     internal PairingCode(
         string value,
         DateTimeOffset expiresAtUtc,
-        AuthorizationDuration duration)
+        AuthorizationDuration duration,
+        AuthorizationPermissions permissions)
     {
         Value = value;
         ExpiresAtUtc = expiresAtUtc;
         Duration = duration;
+        Permissions = permissions;
     }
 
     public string Value { get; }
@@ -186,6 +220,8 @@ public sealed class PairingCode
     public DateTimeOffset ExpiresAtUtc { get; }
 
     public AuthorizationDuration Duration { get; }
+
+    public AuthorizationPermissions Permissions { get; }
 
     public override string ToString() => "[REDACTED]";
 }

@@ -118,6 +118,28 @@ public sealed class AuthorizationCoordinatorExchangeTests
             result.Authorization.CreatedAtUtc.AddHours(1));
     }
 
+    [Theory]
+    [InlineData(AuthorizationPermissions.Write)]
+    [InlineData(AuthorizationPermissions.ReadWrite)]
+    public async Task Exchange_uses_permissions_bound_to_pairing_code(
+        AuthorizationPermissions permissions)
+    {
+        var persistence = new FakeAuthorizationPersistence();
+        var pairingCodes = CreatePairingCodes();
+        var code = pairingCodes.Create(AuthorizationDuration.OneHour, permissions);
+        await using var coordinator = await CreateCoordinatorAsync(persistence, pairingCodes);
+
+        var result = await coordinator.ExchangeAsync(
+            new ExchangeAuthorizationRequest(
+                code.Value,
+                "Browser",
+                IPAddress.Parse("192.168.1.5"),
+                AuthorizationDuration.Permanent));
+
+        result.Succeeded.Should().BeTrue();
+        result.Authorization!.Permissions.Should().Be(permissions);
+    }
+
     [Fact]
     public async Task Failed_exchange_keeps_old_state_returns_no_token_and_consumes_code()
     {

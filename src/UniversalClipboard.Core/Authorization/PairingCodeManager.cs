@@ -38,11 +38,18 @@ public sealed class PairingCodeManager
 
     public PairingCode Create() => Create(AuthorizationDuration.FiveHours);
 
-    public PairingCode Create(AuthorizationDuration duration)
+    public PairingCode Create(
+        AuthorizationDuration duration,
+        AuthorizationPermissions permissions = AuthorizationPermissions.Read)
     {
         if (!Enum.IsDefined(duration))
         {
             throw new ArgumentOutOfRangeException(nameof(duration));
+        }
+
+        if (!SessionTokenService.IsValidPermissions(permissions))
+        {
+            throw new ArgumentOutOfRangeException(nameof(permissions));
         }
 
         Span<byte> bytes = stackalloc byte[EntropyByteCount];
@@ -53,10 +60,10 @@ public sealed class PairingCodeManager
 
         lock (_gate)
         {
-            _activeCode = new ActivePairingCode(value, expiresAtUtc, duration);
+            _activeCode = new ActivePairingCode(value, expiresAtUtc, duration, permissions);
         }
 
-        return new PairingCode(value, expiresAtUtc, duration);
+        return new PairingCode(value, expiresAtUtc, duration, permissions);
     }
 
     public void Invalidate()
@@ -71,9 +78,16 @@ public sealed class PairingCodeManager
 
     public bool TryConsume(
         string? value,
-        out AuthorizationDuration duration)
+        out AuthorizationDuration duration) =>
+        TryConsume(value, out duration, out _);
+
+    public bool TryConsume(
+        string? value,
+        out AuthorizationDuration duration,
+        out AuthorizationPermissions permissions)
     {
         duration = default;
+        permissions = default;
         if (string.IsNullOrEmpty(value))
         {
             return false;
@@ -95,6 +109,7 @@ public sealed class PairingCodeManager
 
             _activeCode = null;
             duration = activeCode.Duration;
+            permissions = activeCode.Permissions;
             return true;
         }
     }
@@ -109,5 +124,6 @@ public sealed class PairingCodeManager
     private sealed record ActivePairingCode(
         string Value,
         DateTimeOffset ExpiresAtUtc,
-        AuthorizationDuration Duration);
+        AuthorizationDuration Duration,
+        AuthorizationPermissions Permissions);
 }

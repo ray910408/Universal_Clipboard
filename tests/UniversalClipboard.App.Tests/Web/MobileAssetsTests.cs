@@ -33,6 +33,20 @@ public sealed partial class MobileAssetsTests
         root.GetProperty("copy").GetProperty("confirmed").GetString().Should().Be("Copied");
         root.GetProperty("copy").GetProperty("fallback").GetString().Should().Be(
             "Copy requested - verify, or long-press and choose Copy");
+        root.GetProperty("incoming").GetProperty("endpoint").GetString()
+            .Should().Be("/clip-api/incoming-text");
+        root.GetProperty("incoming").GetProperty("storageKey").GetString()
+            .Should().Be("uc.permission");
+        root.GetProperty("incoming").GetProperty("readPermissions").EnumerateArray()
+            .Select(value => value.GetString())
+            .Should().Equal("read", "readWrite");
+        root.GetProperty("incoming").GetProperty("writePermissions").EnumerateArray()
+            .Select(value => value.GetString())
+            .Should().Equal("write", "readWrite");
+        root.GetProperty("incoming").GetProperty("disabled").GetString()
+            .Should().Contain("Write enabled");
+        root.GetProperty("incoming").GetProperty("queued").GetString()
+            .Should().Be("Pending in Windows tray.");
     }
 
     [Fact]
@@ -138,6 +152,45 @@ public sealed partial class MobileAssetsTests
     }
 
     [Fact]
+    public void Pairing_post_sends_device_and_browser_metadata_without_permission_escalation()
+    {
+        var script = ReadAsset("/app.js");
+        var function = ExtractFunction(script, "postPairingCode");
+
+        function.Should().Contain("deviceName");
+        function.Should().Contain("browserName");
+        function.Should().NotContain("permission");
+        script.Should().Contain("function detectDeviceName()");
+        script.Should().Contain("function detectBrowserName()");
+    }
+
+    [Fact]
+    public void Send_to_windows_flow_requires_write_permission_and_posts_authenticated_json()
+    {
+        var script = ReadAsset("/app.js");
+        using var contract = ReadContract(script);
+        var sendFunction = ExtractFunction(script, "sendIncomingText");
+        var permissionFunction = ExtractFunction(script, "canSendToWindows");
+        var readPermissionFunction = ExtractFunction(script, "canReadFromWindows");
+        var pollFunction = ExtractFunction(script, "pollClips");
+
+        contract.RootElement.GetProperty("incoming").GetProperty("endpoint").GetString()
+            .Should().Be("/clip-api/incoming-text");
+        permissionFunction.Should().Contain("CONTRACT.incoming.writePermissions.includes");
+        readPermissionFunction.Should().Contain("permission === null");
+        readPermissionFunction.Should().Contain("CONTRACT.incoming.readPermissions.includes");
+        pollFunction.Should().Contain("!canReadFromWindows");
+        pollFunction.Should().Contain("renderItems([]);");
+        pollFunction.Should().Contain("response.status === 403");
+        sendFunction.Should().Contain("CONTRACT.incoming.endpoint");
+        sendFunction.Should().Contain("\"Content-Type\": \"application/json\"");
+        sendFunction.Should().Contain("...sessionHeaders()");
+        sendFunction.Should().Contain("response.status === 401");
+        sendFunction.Should().Contain("response.status === 403");
+        sendFunction.Should().NotContain("innerHTML");
+    }
+
+    [Fact]
     public void Rendering_and_copy_paths_do_not_claim_unconfirmed_success()
     {
         var script = ReadAsset("/app.js");
@@ -178,6 +231,9 @@ public sealed partial class MobileAssetsTests
         html.Should().Contain("HTTP");
         html.Should().Contain("<textarea");
         html.Should().Contain("readonly");
+        html.Should().Contain("id=\"incoming-text\"");
+        html.Should().Contain("id=\"incoming-send\"");
+        html.Should().Contain("Send to Windows");
         var resourceTargets = ResourceReferenceRegex().Matches(html)
             .Select(match => match.Groups["target"].Value)
             .ToArray();

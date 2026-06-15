@@ -143,6 +143,10 @@ internal static class AuthorizationTestFactory
             Now,
             IPAddress.Loopback,
             expiresAtUtc ?? Now.AddHours(5),
+            null,
+            null,
+            null,
+            AuthorizationPermissions.Read,
             ImmutableArray.Create(digest),
             ImmutableArray.Create(proofDigest));
     }

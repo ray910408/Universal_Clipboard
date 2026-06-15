@@ -12,9 +12,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at top right, rgba(79, 143, 110, 0.18), transparent 34rem),
-    #f2f5f3;
+  background: #f2f5f3;
 }
 
 button,
@@ -62,9 +60,10 @@ h2 {
 .warning,
 .state-card,
 .fallback-card,
+.send-panel,
 .clip-card {
   border: 1px solid rgba(23, 33, 28, 0.12);
-  border-radius: 1rem;
+  border-radius: 0.5rem;
   background: rgba(255, 255, 255, 0.92);
   box-shadow: 0 0.65rem 2rem rgba(31, 55, 42, 0.08);
 }
@@ -79,13 +78,15 @@ h2 {
 }
 
 .state-card,
-.fallback-card {
+.fallback-card,
+.send-panel {
   padding: 1.1rem;
   margin-bottom: 1rem;
 }
 
 .state-card p,
-.fallback-card p {
+.fallback-card p,
+.send-panel p {
   margin-bottom: 0;
   color: #56625b;
   line-height: 1.5;
@@ -112,6 +113,10 @@ h2 {
 .section-heading span {
   color: #68736c;
   font-size: 0.78rem;
+}
+
+.section-heading.compact {
+  margin-top: 0;
 }
 
 .items-list {
@@ -168,16 +173,58 @@ h2 {
   padding: 0.8rem;
   resize: vertical;
   border: 1px solid #b9c4bd;
-  border-radius: 0.75rem;
+  border-radius: 0.5rem;
   background: white;
   color: #17211c;
 }
 
+#incoming-text {
+  width: 100%;
+  min-height: 7rem;
+  margin-top: 0.85rem;
+  padding: 0.8rem;
+  resize: vertical;
+  border: 1px solid #b9c4bd;
+  border-radius: 0.5rem;
+  background: white;
+  color: #17211c;
+}
+
+#incoming-text:disabled {
+  background: #edf0ee;
+  color: #68736c;
+}
+
+.send-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-top: 0.75rem;
+}
+
 .copy-status {
   min-height: 1.5rem;
-  margin-top: 0.65rem;
+  margin-top: 0;
   color: #225d3e;
   font-weight: 700;
+}
+
+button:disabled {
+  background: #a9b5af;
+  color: #f8faf9;
+}
+
+@media (max-width: 32rem) {
+  .clip-meta,
+  .send-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .copy-button {
+    width: 100%;
+  }
 }
 
 [hidden] {

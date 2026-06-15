@@ -19,7 +19,41 @@ public sealed class PairingCodeManagerTests
         pairingCode.Value.Should().NotContain("=");
         pairingCode.ExpiresAtUtc.Should().Be(clock.GetUtcNow().AddMinutes(2));
         pairingCode.Duration.Should().Be(AuthorizationDuration.OneWeek);
+        pairingCode.Permissions.Should().Be(AuthorizationPermissions.Read);
         entropy.RequestedLengths.Should().Equal(24);
+    }
+
+    [Theory]
+    [InlineData(AuthorizationPermissions.Write)]
+    [InlineData(AuthorizationPermissions.ReadWrite)]
+    public void Create_binds_explicit_permissions_to_code(
+        AuthorizationPermissions permissions)
+    {
+        var manager = new PairingCodeManager(
+            new ManualTimeProvider(DateTimeOffset.UtcNow),
+            new QueueEntropySource(new byte[24]));
+
+        var code = manager.Create(AuthorizationDuration.OneHour, permissions);
+
+        code.Permissions.Should().Be(permissions);
+        manager.TryConsume(
+            code.Value,
+            out var duration,
+            out var consumedPermissions).Should().BeTrue();
+        duration.Should().Be(AuthorizationDuration.OneHour);
+        consumedPermissions.Should().Be(permissions);
+    }
+
+    [Theory]
+    [InlineData(AuthorizationPermissions.None)]
+    [InlineData((AuthorizationPermissions)4)]
+    public void Create_rejects_invalid_permissions(AuthorizationPermissions permissions)
+    {
+        var manager = new PairingCodeManager();
+
+        var create = () => manager.Create(AuthorizationDuration.FiveHours, permissions);
+
+        create.Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Fact]
@@ -33,8 +67,9 @@ public sealed class PairingCodeManagerTests
         var second = manager.Create();
 
         manager.TryConsume(first.Value, out _).Should().BeFalse();
-        manager.TryConsume(second.Value, out var duration).Should().BeTrue();
+        manager.TryConsume(second.Value, out var duration, out var permissions).Should().BeTrue();
         duration.Should().Be(AuthorizationDuration.FiveHours);
+        permissions.Should().Be(AuthorizationPermissions.Read);
     }
 
     [Fact]

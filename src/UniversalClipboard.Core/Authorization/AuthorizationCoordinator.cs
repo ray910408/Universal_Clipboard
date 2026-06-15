@@ -82,7 +82,7 @@ public sealed class AuthorizationCoordinator :
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        if (!_pairingCodes.TryConsume(request.PairingCode, out var duration))
+        if (!_pairingCodes.TryConsume(request.PairingCode, out var duration, out var permissions))
         {
             return ValueTask.FromResult(
                 ExchangeAuthorizationResult.Failed(AuthorizationFailure.InvalidPairingCode));
@@ -94,7 +94,10 @@ public sealed class AuthorizationCoordinator :
             issue = _tokenService.Issue(
                 request.Label,
                 request.BoundHostIpv4,
-                duration);
+                duration,
+                permissions,
+                request.DeviceName,
+                request.BrowserName);
         }
         catch (ArgumentException)
         {
@@ -156,6 +159,10 @@ public sealed class AuthorizationCoordinator :
             {
                 result = new AcquireLeaseResult(AuthorizationFailure.InvalidToken, null);
             }
+            else if (!HasRequiredPermission(authorization.Permissions, request.RequiredPermission))
+            {
+                result = new AcquireLeaseResult(AuthorizationFailure.PermissionDenied, null);
+            }
             else
             {
                 if (!_leaseTrackers.TryGetValue(authorization.Id, out var tracker))
@@ -168,7 +175,11 @@ public sealed class AuthorizationCoordinator :
                 var lease = new AuthorizationLease(
                     tracker.RevocationSource.Token,
                     () => ReleaseLease(authorization.Id, tracker));
-                result = new AcquireLeaseResult(AuthorizationFailure.None, lease);
+                UpdateLastAccessedAtUtc(authorization.Id, _timeProvider.GetUtcNow().ToUniversalTime());
+                result = new AcquireLeaseResult(
+                    AuthorizationFailure.None,
+                    lease,
+                    AuthorizationMetadata.FromRecord(authorization));
             }
         }
 
@@ -190,9 +201,7 @@ public sealed class AuthorizationCoordinator :
     public ValueTask<AuthorizationMutationResult> RevokeAllAsync(
         CancellationToken cancellationToken = default) =>
         EnqueueMutationAsync(
-            () => RevokeCoreAsync(
-                _document.Authorizations.Select(authorization => authorization.Id).ToImmutableArray(),
-                requireAllIds: false),
+            RevokeAllCoreAsync,
             cancellationToken);
 
     public ValueTask<AuthorizationMutationResult> RemoveStaleBindingsAsync(
@@ -229,19 +238,14 @@ public sealed class AuthorizationCoordinator :
 
     private async Task<ExchangeAuthorizationResult> ExchangeCoreAsync(SessionTokenIssue issue)
     {
-        var candidate = new AuthorizationDocument(
-            _document.Authorizations.Add(issue.Authorization));
+        var candidate = CreateDocumentCandidate(
+            authorizations => new AuthorizationDocument(authorizations.Add(issue.Authorization)));
 
-        try
-        {
-            await _persistence.SaveAsync(candidate, CancellationToken.None);
-        }
-        catch (Exception)
+        if (!await TrySaveAndPublishAsync(candidate))
         {
             return ExchangeAuthorizationResult.Failed(AuthorizationFailure.PersistenceFailed);
         }
 
-        Publish(candidate);
         return ExchangeAuthorizationResult.Success(issue);
     }
 
@@ -254,9 +258,14 @@ public sealed class AuthorizationCoordinator :
             return MutationSucceeded();
         }
 
-        var existingIds = _document.Authorizations
-            .Select(authorization => authorization.Id)
-            .ToHashSet();
+        HashSet<Guid> existingIds;
+        lock (_leaseGate)
+        {
+            existingIds = _document.Authorizations
+                .Select(authorization => authorization.Id)
+                .ToHashSet();
+        }
+
         if (requireAllIds && authorizationIds.Any(id => !existingIds.Contains(id)))
         {
             return MutationFailed(AuthorizationFailure.NotFound);
@@ -281,17 +290,17 @@ public sealed class AuthorizationCoordinator :
             }
 
             var idSet = ids.ToHashSet();
-            var candidate = new AuthorizationDocument(
-                _document.Authorizations
-                    .Where(authorization => !idSet.Contains(authorization.Id))
-                    .ToImmutableArray());
+            var candidate = CreateDocumentCandidate(
+                authorizations => new AuthorizationDocument(
+                    authorizations
+                        .Where(authorization => !idSet.Contains(authorization.Id))
+                        .ToImmutableArray()));
 
-            if (!await TrySaveAsync(candidate))
+            if (!await TrySaveAndPublishAsync(candidate))
             {
                 return MutationFailed(AuthorizationFailure.PersistenceFailed);
             }
 
-            Publish(candidate);
             return MutationSucceeded();
         }
         finally
@@ -303,18 +312,27 @@ public sealed class AuthorizationCoordinator :
     private async Task<AuthorizationMutationResult> RemoveStaleBindingsCoreAsync(
         HashSet<IPAddress> activeHostIpv4Addresses)
     {
-        var staleIds = _document.Authorizations
-            .Where(authorization => !activeHostIpv4Addresses.Contains(authorization.BoundHostIpv4))
-            .Select(authorization => authorization.Id)
-            .ToImmutableArray();
+        ImmutableArray<Guid> staleIds;
+        lock (_leaseGate)
+        {
+            staleIds = _document.Authorizations
+                .Where(authorization => !activeHostIpv4Addresses.Contains(authorization.BoundHostIpv4))
+                .Select(authorization => authorization.Id)
+                .ToImmutableArray();
+        }
 
         return await RevokeCoreAsync(staleIds, requireAllIds: false);
     }
 
     private async Task<AuthorizationMutationResult> CleanupExpiredCoreAsync(Guid authorizationId)
     {
-        var authorization = _document.Authorizations.FirstOrDefault(
-            item => item.Id == authorizationId);
+        AuthorizationRecord? authorization;
+        lock (_leaseGate)
+        {
+            authorization = _document.Authorizations.FirstOrDefault(
+                item => item.Id == authorizationId);
+        }
+
         if (authorization?.ExpiresAtUtc is not { } expiry ||
             _timeProvider.GetUtcNow() < expiry)
         {
@@ -324,17 +342,54 @@ public sealed class AuthorizationCoordinator :
         return await RevokeCoreAsync([authorizationId], requireAllIds: false);
     }
 
-    private async Task<bool> TrySaveAsync(AuthorizationDocument candidate)
+    private Task<AuthorizationMutationResult> RevokeAllCoreAsync()
+    {
+        ImmutableArray<Guid> authorizationIds;
+        lock (_leaseGate)
+        {
+            authorizationIds = _document.Authorizations
+                .Select(authorization => authorization.Id)
+                .ToImmutableArray();
+        }
+
+        return RevokeCoreAsync(authorizationIds, requireAllIds: false);
+    }
+
+    private AuthorizationDocument CreateDocumentCandidate(
+        Func<ImmutableArray<AuthorizationRecord>, AuthorizationDocument> factory)
+    {
+        lock (_leaseGate)
+        {
+            return factory(_document.Authorizations);
+        }
+    }
+
+    private async Task<bool> TrySaveAndPublishAsync(AuthorizationDocument candidate)
     {
         try
         {
             await _persistence.SaveAsync(candidate, CancellationToken.None);
-            return true;
         }
         catch (Exception)
         {
             return false;
         }
+
+        var publishCandidate = MergeLastAccessedAtUtc(candidate);
+        if (!Equals(publishCandidate, candidate))
+        {
+            try
+            {
+                await _persistence.SaveAsync(publishCandidate, CancellationToken.None);
+            }
+            catch (Exception)
+            {
+                // Last-access persistence is opportunistic; the base mutation is already durable.
+            }
+        }
+
+        Publish(publishCandidate);
+        return true;
     }
 
     private ImmutableArray<Task> BeginRevocation(ImmutableArray<Guid> authorizationIds)
@@ -397,6 +452,53 @@ public sealed class AuthorizationCoordinator :
             }
         }
     }
+
+    private void UpdateLastAccessedAtUtc(
+        Guid authorizationId,
+        DateTimeOffset lastAccessedAtUtc)
+    {
+        var documentIndex = FindAuthorizationIndex(_document.Authorizations, authorizationId);
+        if (documentIndex >= 0)
+        {
+            _document = new AuthorizationDocument(
+                _document.Authorizations.SetItem(
+                    documentIndex,
+                    _document.Authorizations[documentIndex] with { LastAccessedAtUtc = lastAccessedAtUtc }));
+        }
+
+        var snapshot = Volatile.Read(ref _snapshot);
+        var snapshotIndex = FindAuthorizationIndex(snapshot.Authorizations, authorizationId);
+        if (snapshotIndex < 0)
+        {
+            return;
+        }
+
+        var updatedAuthorizations = snapshot.Authorizations.SetItem(
+            snapshotIndex,
+            snapshot.Authorizations[snapshotIndex] with { LastAccessedAtUtc = lastAccessedAtUtc });
+        Volatile.Write(ref _snapshot, new AuthorizationStateSnapshot(updatedAuthorizations));
+    }
+
+    private static int FindAuthorizationIndex(
+        ImmutableArray<AuthorizationRecord> authorizations,
+        Guid authorizationId)
+    {
+        for (var index = 0; index < authorizations.Length; index++)
+        {
+            if (authorizations[index].Id == authorizationId)
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool HasRequiredPermission(
+        AuthorizationPermissions actual,
+        AuthorizationPermissions required) =>
+        SessionTokenService.IsValidPermissions(required) &&
+        (actual & required) == required;
 
     private void ScheduleExpiredCleanup(Guid authorizationId)
     {
@@ -479,9 +581,50 @@ public sealed class AuthorizationCoordinator :
     {
         lock (_leaseGate)
         {
-            _document = document;
-            Volatile.Write(ref _snapshot, new AuthorizationStateSnapshot(document.Authorizations));
+            var merged = MergeLastAccessedAtUtc(document, _document.Authorizations);
+            _document = merged;
+            Volatile.Write(ref _snapshot, new AuthorizationStateSnapshot(merged.Authorizations));
         }
+    }
+
+    private AuthorizationDocument MergeLastAccessedAtUtc(AuthorizationDocument candidate)
+    {
+        lock (_leaseGate)
+        {
+            return MergeLastAccessedAtUtc(candidate, _document.Authorizations);
+        }
+    }
+
+    private static AuthorizationDocument MergeLastAccessedAtUtc(
+        AuthorizationDocument candidate,
+        ImmutableArray<AuthorizationRecord> currentAuthorizations)
+    {
+        var authorizations = candidate.Authorizations;
+        var changed = false;
+        for (var index = 0; index < authorizations.Length; index++)
+        {
+            var currentIndex = FindAuthorizationIndex(
+                currentAuthorizations,
+                authorizations[index].Id);
+            if (currentIndex < 0)
+            {
+                continue;
+            }
+
+            var currentLastAccess = currentAuthorizations[currentIndex].LastAccessedAtUtc;
+            if (currentLastAccess is null ||
+                authorizations[index].LastAccessedAtUtc >= currentLastAccess)
+            {
+                continue;
+            }
+
+            authorizations = authorizations.SetItem(
+                index,
+                authorizations[index] with { LastAccessedAtUtc = currentLastAccess });
+            changed = true;
+        }
+
+        return changed ? new AuthorizationDocument(authorizations) : candidate;
     }
 
     private AuthorizationMutationResult MutationSucceeded() =>

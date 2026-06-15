@@ -58,7 +58,17 @@ These gates require real device interaction and must stay unchecked until verifi
 against the current release candidate:
 
 - [ ] pair through the real tray QR from iPhone Safari;
+- [ ] verify the tray permission selector defaults to **Read only** before pairing;
 - [ ] copy a harmless clipboard fixture from Windows;
 - [ ] tap **Copy to iPhone** in Safari;
 - [ ] verify the manual textarea long-press **Copy** fallback in Safari;
-- [ ] revoke the paired browser from the Tray UI and verify access stops.
+- [ ] verify **Send to Windows** is disabled for a Read-only pairing;
+- [ ] re-pair with **Write only** and verify the Windows feed is unavailable while
+      **Send to Windows** remains enabled;
+- [ ] re-pair with **Read + Write**, send harmless text from Safari, and verify the
+      tray shows **Pending incoming text** without exposing the full text;
+- [ ] click **Apply to Windows Clipboard** and paste on Windows to verify the exact
+      incoming text was applied;
+- [ ] revoke the paired browser from the Tray UI and verify access stops;
+- [ ] after revoke or expiry cleanup, verify any pending incoming item from that
+      authorization is gone and stale Apply/Discard actions do nothing.

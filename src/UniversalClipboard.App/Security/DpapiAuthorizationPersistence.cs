@@ -9,7 +9,8 @@ namespace UniversalClipboard.App.Security;
 
 public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
 {
-    private const int SchemaVersion = 2;
+    private const int SchemaVersion = 3;
+    private const int LegacySchemaVersionWithSessionProof = 2;
     private const int LegacySchemaVersion = 1;
     private const int MaximumDocumentBytes = 4 * 1024 * 1024;
     private static readonly byte[] OptionalEntropy =
@@ -149,6 +150,15 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
             writer.Write(authorization.TokenDigest.AsSpan());
             writer.Write(authorization.SessionProofDigest.Length);
             writer.Write(authorization.SessionProofDigest.AsSpan());
+            WriteNullableString(writer, authorization.DeviceName);
+            WriteNullableString(writer, authorization.BrowserName);
+            writer.Write(authorization.LastAccessedAtUtc.HasValue);
+            if (authorization.LastAccessedAtUtc is { } lastAccessedAtUtc)
+            {
+                writer.Write(lastAccessedAtUtc.UtcTicks);
+            }
+
+            writer.Write((int)authorization.Permissions);
         }
 
         writer.Flush();
@@ -165,7 +175,7 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
         using var stream = new MemoryStream(plaintext, writable: false);
         using var reader = new BinaryReader(stream);
         var version = reader.ReadInt32();
-        if (version is not SchemaVersion and not LegacySchemaVersion)
+        if (version is not SchemaVersion and not LegacySchemaVersionWithSessionProof and not LegacySchemaVersion)
         {
             throw new InvalidDataException("Unknown authorization schema.");
         }
@@ -203,6 +213,23 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
                 throw new InvalidDataException("Invalid session proof digest length.");
             }
 
+            var sessionProofDigest = ImmutableArray.Create(ReadExact(reader, proofDigestLength));
+            string? deviceName = null;
+            string? browserName = null;
+            DateTimeOffset? lastAccessedAtUtc = null;
+            var permissions = AuthorizationPermissions.Read;
+            if (version == SchemaVersion)
+            {
+                deviceName = ReadNullableString(reader);
+                browserName = ReadNullableString(reader);
+                lastAccessedAtUtc = reader.ReadBoolean() ? ReadUtc(reader) : null;
+                permissions = (AuthorizationPermissions)reader.ReadInt32();
+                if (!IsValidPermissions(permissions))
+                {
+                    throw new InvalidDataException("Invalid authorization permissions.");
+                }
+            }
+
             authorizations.Add(
                 new AuthorizationRecord(
                     id,
@@ -210,8 +237,12 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
                     createdAtUtc,
                     boundAddress,
                     expiresAtUtc,
+                    deviceName,
+                    browserName,
+                    lastAccessedAtUtc,
+                    permissions,
                     tokenDigest,
-                    ImmutableArray.Create(ReadExact(reader, proofDigestLength))));
+                    sessionProofDigest));
         }
 
         if (stream.Position != stream.Length)
@@ -232,6 +263,22 @@ public sealed class DpapiAuthorizationPersistence : IAuthorizationPersistence
 
         return new DateTimeOffset(ticks, TimeSpan.Zero);
     }
+
+    private static void WriteNullableString(BinaryWriter writer, string? value)
+    {
+        writer.Write(value is not null);
+        if (value is not null)
+        {
+            writer.Write(value);
+        }
+    }
+
+    private static string? ReadNullableString(BinaryReader reader) =>
+        reader.ReadBoolean() ? reader.ReadString() : null;
+
+    private static bool IsValidPermissions(AuthorizationPermissions permissions) =>
+        permissions is not AuthorizationPermissions.None &&
+        (permissions & ~AuthorizationPermissions.ReadWrite) == 0;
 
     private static byte[] ReadExact(BinaryReader reader, int length)
     {

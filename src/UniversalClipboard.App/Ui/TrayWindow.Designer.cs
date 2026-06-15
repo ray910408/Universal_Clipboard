@@ -23,6 +23,8 @@ public sealed partial class TrayWindow
     private Label retryValue = null!;
     private Label durationLabel = null!;
     private ComboBox durationComboBox = null!;
+    private Label permissionLabel = null!;
+    private ComboBox permissionComboBox = null!;
     private Label interfaceLabel = null!;
     private ComboBox interfaceComboBox = null!;
     private Label pairingUrlLabel = null!;
@@ -32,6 +34,8 @@ public sealed partial class TrayWindow
     private ListBox browserListBox = null!;
     private ListBox sharedListBox = null!;
     private ListBox pendingListBox = null!;
+    private Label incomingListLabel = null!;
+    private ListBox incomingListBox = null!;
     private Button startButton = null!;
     private Button stopButton = null!;
     private Button pairButton = null!;
@@ -40,6 +44,8 @@ public sealed partial class TrayWindow
     private Button withdrawButton = null!;
     private Button allowButton = null!;
     private Button discardButton = null!;
+    private Button applyIncomingButton = null!;
+    private Button discardIncomingButton = null!;
     private Button exitButton = null!;
 
     private void InitializeComponent()
@@ -62,6 +68,8 @@ public sealed partial class TrayWindow
         retryValue = new Label();
         durationLabel = new Label();
         durationComboBox = new ComboBox();
+        permissionLabel = new Label();
+        permissionComboBox = new ComboBox();
         interfaceLabel = new Label();
         interfaceComboBox = new ComboBox();
         pairingUrlLabel = new Label();
@@ -71,6 +79,8 @@ public sealed partial class TrayWindow
         browserListBox = new ListBox();
         sharedListBox = new ListBox();
         pendingListBox = new ListBox();
+        incomingListLabel = new Label();
+        incomingListBox = new ListBox();
         startButton = new Button();
         stopButton = new Button();
         pairButton = new Button();
@@ -79,6 +89,8 @@ public sealed partial class TrayWindow
         withdrawButton = new Button();
         allowButton = new Button();
         discardButton = new Button();
+        applyIncomingButton = new Button();
+        discardIncomingButton = new Button();
         exitButton = new Button();
         SuspendLayout();
 
@@ -139,63 +151,83 @@ public sealed partial class TrayWindow
         durationComboBox.Location = new Point(110, 235);
         durationComboBox.Size = new Size(160, 28);
 
+        permissionLabel.Text = "Permission";
+        permissionLabel.Location = new Point(300, 239);
+        permissionLabel.AutoSize = true;
+        permissionComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        permissionComboBox.Location = new Point(390, 235);
+        permissionComboBox.Size = new Size(170, 28);
+
         interfaceLabel.Text = "Interface";
-        interfaceLabel.Location = new Point(300, 239);
+        interfaceLabel.Location = new Point(12, 271);
         interfaceLabel.AutoSize = true;
         interfaceComboBox.DropDownStyle = ComboBoxStyle.DropDownList;
-        interfaceComboBox.Location = new Point(370, 235);
-        interfaceComboBox.Size = new Size(190, 28);
+        interfaceComboBox.Location = new Point(110, 267);
+        interfaceComboBox.Size = new Size(450, 28);
 
         pairingUrlLabel.Text = "Pairing";
-        pairingUrlLabel.Location = new Point(12, 277);
+        pairingUrlLabel.Location = new Point(12, 311);
         pairingUrlLabel.AutoSize = true;
-        pairingUrlValue.Location = new Point(110, 277);
+        pairingUrlValue.Location = new Point(110, 311);
         pairingUrlValue.Size = new Size(320, 42);
         qrPictureBox.BorderStyle = BorderStyle.FixedSingle;
-        qrPictureBox.Location = new Point(446, 271);
+        qrPictureBox.Location = new Point(446, 305);
         qrPictureBox.Size = new Size(114, 114);
         qrPictureBox.SizeMode = PictureBoxSizeMode.Zoom;
 
-        browserListLabel.Text = "Paired browser authorizations";
-        browserListLabel.Location = new Point(12, 377);
+        browserListLabel.Text = "Paired devices";
+        browserListLabel.Location = new Point(12, 431);
         browserListLabel.AutoSize = true;
-        browserListBox.Location = new Point(12, 401);
-        browserListBox.Size = new Size(260, 104);
-        sharedListBox.Location = new Point(300, 401);
-        sharedListBox.Size = new Size(260, 104);
-        pendingListBox.Location = new Point(12, 541);
-        pendingListBox.Size = new Size(548, 84);
+        browserListBox.HorizontalScrollbar = true;
+        browserListBox.Location = new Point(12, 455);
+        browserListBox.Size = new Size(548, 96);
+        sharedListBox.Location = new Point(300, 585);
+        sharedListBox.Size = new Size(260, 76);
+        pendingListBox.Location = new Point(12, 585);
+        pendingListBox.Size = new Size(260, 76);
+        incomingListLabel.Text = "Pending incoming text";
+        incomingListLabel.Location = new Point(12, 701);
+        incomingListLabel.AutoSize = true;
+        incomingListBox.HorizontalScrollbar = true;
+        incomingListBox.Location = new Point(12, 725);
+        incomingListBox.Size = new Size(548, 70);
 
         startButton.Text = "Start";
-        startButton.Location = new Point(12, 672);
+        startButton.Location = new Point(12, 842);
         startButton.Size = new Size(75, 30);
         stopButton.Text = "Stop";
-        stopButton.Location = new Point(93, 672);
+        stopButton.Location = new Point(93, 842);
         stopButton.Size = new Size(75, 30);
         pairButton.Text = "Pair";
-        pairButton.Location = new Point(174, 672);
+        pairButton.Location = new Point(174, 842);
         pairButton.Size = new Size(75, 30);
         revokeButton.Text = "Revoke";
-        revokeButton.Location = new Point(255, 672);
+        revokeButton.Location = new Point(255, 842);
         revokeButton.Size = new Size(82, 30);
         revokeAllButton.Text = "Revoke all";
-        revokeAllButton.Location = new Point(343, 672);
+        revokeAllButton.Location = new Point(343, 842);
         revokeAllButton.Size = new Size(92, 30);
         exitButton.Text = "Exit";
-        exitButton.Location = new Point(485, 672);
+        exitButton.Location = new Point(485, 842);
         exitButton.Size = new Size(75, 30);
 
         withdrawButton.Text = "Withdraw shared";
-        withdrawButton.Location = new Point(300, 511);
+        withdrawButton.Location = new Point(300, 667);
         withdrawButton.Size = new Size(130, 28);
         allowButton.Text = "Allow once";
-        allowButton.Location = new Point(12, 631);
+        allowButton.Location = new Point(12, 667);
         allowButton.Size = new Size(105, 28);
         discardButton.Text = "Discard";
-        discardButton.Location = new Point(123, 631);
+        discardButton.Location = new Point(123, 667);
         discardButton.Size = new Size(95, 28);
+        applyIncomingButton.Text = "Apply to Windows Clipboard";
+        applyIncomingButton.Location = new Point(12, 801);
+        applyIncomingButton.Size = new Size(190, 28);
+        discardIncomingButton.Text = "Discard incoming";
+        discardIncomingButton.Location = new Point(208, 801);
+        discardIncomingButton.Size = new Size(140, 28);
 
-        ClientSize = new Size(580, 717);
+        ClientSize = new Size(580, 887);
         Controls.Add(serviceStatusLabel);
         Controls.Add(serviceStatusValue);
         Controls.Add(urlLabel);
@@ -213,6 +245,8 @@ public sealed partial class TrayWindow
         Controls.Add(retryValue);
         Controls.Add(durationLabel);
         Controls.Add(durationComboBox);
+        Controls.Add(permissionLabel);
+        Controls.Add(permissionComboBox);
         Controls.Add(interfaceLabel);
         Controls.Add(interfaceComboBox);
         Controls.Add(pairingUrlLabel);
@@ -222,6 +256,8 @@ public sealed partial class TrayWindow
         Controls.Add(browserListBox);
         Controls.Add(sharedListBox);
         Controls.Add(pendingListBox);
+        Controls.Add(incomingListLabel);
+        Controls.Add(incomingListBox);
         Controls.Add(startButton);
         Controls.Add(stopButton);
         Controls.Add(pairButton);
@@ -230,6 +266,8 @@ public sealed partial class TrayWindow
         Controls.Add(withdrawButton);
         Controls.Add(allowButton);
         Controls.Add(discardButton);
+        Controls.Add(applyIncomingButton);
+        Controls.Add(discardIncomingButton);
         Controls.Add(exitButton);
         MaximizeBox = false;
         Text = "Universal Clipboard";

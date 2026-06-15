@@ -46,6 +46,22 @@
       <div id="items-list" class="items-list" aria-live="polite"></div>
     </section>
 
+    <section class="send-panel" aria-labelledby="send-title">
+      <div class="section-heading compact">
+        <h2 id="send-title">Send to Windows</h2>
+        <span id="incoming-permission">Read only</span>
+      </div>
+      <textarea id="incoming-text" aria-label="Text to send to Windows" disabled></textarea>
+      <div class="send-actions">
+        <p id="incoming-status" class="copy-status" role="status">
+          Re-pair from Windows with Write enabled.
+        </p>
+        <button id="incoming-send" class="copy-button" type="button" disabled>
+          Send to Windows
+        </button>
+      </div>
+    </section>
+
     <section class="fallback-card" aria-labelledby="fallback-title">
       <h2 id="fallback-title">Manual copy</h2>
       <p>When one-tap copy is unavailable, the exact selected text appears here.</p>

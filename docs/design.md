@@ -19,6 +19,11 @@ The MVP flow is:
 4. Tap `Copy to iPhone`.
 5. Paste into another iPhone app.
 
+Write-enabled pairings also allow the iPhone page to submit plain text back to
+Windows. Incoming text is never applied automatically; it appears as `Pending
+incoming text` in the Windows tray and the user must choose `Apply to Windows
+Clipboard`.
+
 The first version is for one user on a trusted private Wi-Fi network. Pairing is
 required before a browser can retrieve clipboard content.
 
@@ -29,9 +34,12 @@ flowchart LR
     A["Windows clipboard"] --> B["UniversalClipboard.App tray process"]
     B --> C["Local Kestrel HTTPS<br/>self-signed cert on :43127"]
     C --> D["iPhone Safari page<br/>paired same-LAN browser"]
-    D --> E{"Copy path"}
+    D --> E{"Copy to iPhone"}
     E -->|Preferred when available| F["Clipboard API copy"]
     E -->|Reliable fallback| G["Manual textarea selection<br/>long-press Copy"]
+    D -->|Write permission only| H["POST /clip-api/incoming-text"]
+    H --> I["Pending incoming text<br/>Windows tray approval"]
+    I -->|Apply to Windows Clipboard| A
 ```
 
 ## What Makes This Cool
@@ -44,7 +52,9 @@ cloud database, no iPhone app, and no application-managed clipboard archive on d
 
 ## Constraints
 
-- Windows is the only sender.
+- Windows-to-iPhone sharing is the default path. iPhone-to-Windows text submission is
+  available only for Write-enabled pairings and requires Windows tray approval before
+  touching the Windows clipboard.
 - iPhone Safari is the only required receiver.
 - The MVP works only when both devices can reach each other on one trusted private
   network.
@@ -58,7 +68,14 @@ cloud database, no iPhone app, and no application-managed clipboard archive on d
 - Restarting the Windows app clears all shared and pending clipboard items.
 - Shared items do not expire automatically. They leave the list when displaced by
   newer items or explicitly withdrawn on Windows.
-- Every paired browser can read all currently shared items.
+- Every Read-capable paired browser can read all currently shared items.
+- New pairings default to `Read only`. The Windows tray user must select `Write
+  only` or `Read + Write` before generating a pairing code if the iPhone should be
+  allowed to send text back to Windows.
+- Incoming iPhone-to-Windows text is grouped by authorization ID and remains
+  pending until the Windows tray user applies or discards it.
+- Revoke-one, revoke-all, authorization expiry cleanup, and application exit clear
+  the corresponding incoming text queue.
 - Pairing duration choices are 1 hour, 5 hours, 1 day, 1 week, and permanent.
 - Pairing authorization persists across Windows restarts; clipboard content does not.
 - `Permanent` means no server-side expiry until revoked. Safari may remove its cookie
@@ -199,7 +216,7 @@ To keep that scope viable:
 - no WebSocket or SSE;
 - no cloud code;
 - no automatic network repair;
-- no image, file, HTML, or reverse iPhone-to-Windows transfer;
+- no image, file, or HTML transfer;
 - no interactive notification actions. A notification alerts the user and opens the
   tray; approval happens in the tray window;
 - no installer, code signing, or start-with-Windows option in the first release.
@@ -321,6 +338,10 @@ vectors, and runs in linear time. A match means `possible sensitive content`, no
 
 - The user selects 1 hour, 5 hours, 1 day, 1 week, or permanent before generating a
   code. Five hours is selected by default.
+- The user selects `Read only`, `Write only`, or `Read + Write` before generating a
+  code. `Read only` is selected by default.
+- The selected permissions are bound to the one-time pairing code on Windows.
+  Mobile clients cannot request or escalate permissions during exchange.
 - Only one unconsumed pairing code exists at a time. Generating another invalidates
   the previous code.
 - The code contains 192 random bits encoded as base64url without padding.
@@ -343,8 +364,9 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
 
 - A successful exchange creates a random 256-bit token.
 - The server stores a random 128-bit authorization ID, the token's SHA-256 digest,
-  browser label, creation time, bound host IPv4 address, and nullable server-side
-  expiry.
+  browser label, optional device name, optional browser name, creation time, last
+  access time, bound host IPv4 address, nullable server-side expiry, and permission
+  flags.
 - Digest comparison uses fixed-time comparison.
 - The token is stored in a host-scoped `clip_session` cookie. The `Domain` attribute
   is omitted.
@@ -366,11 +388,13 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
   retention is not guaranteed.
 - Server-side expiry and revocation are authoritative even if the browser retains a
   cookie.
+- `GET /clip-api/clips` requires `Read`. `POST /clip-api/incoming-text` requires
+  `Write`; a valid read-only session receives `403` and its cookie is not cleared.
 - Any `401` response also expires the cookie with `Max-Age=0`.
 - `Revoke one` deletes one stable authorization ID. `Revoke all` clears the store.
-- The UI calls these records `Paired browser authorizations`, not physical devices.
-- The tray lists label or `Unnamed browser`, creation time, expiry or
-  `Until revoked`, and an authorization ID suffix beside each revoke action.
+- The tray lists paired devices with device name, browser, creation time, last
+  access time, expiry or `Until revoked`, Read/Write permissions, and an
+  authorization ID suffix beside each revoke action.
   It begins with eight base64url characters and extends in four-character increments
   until every displayed suffix is unique. Duplicate or blank labels are allowed
   because the full authorization ID is authoritative.
@@ -418,6 +442,9 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
 - Writes use a temporary file in the same directory, flush to disk, then atomic
   replace or move.
 - The document has an explicit schema version.
+- Schema version 3 stores optional device name, optional browser name, last-access
+  time, and Read/Write permission flags. Legacy schema versions load as Read-only
+  authorizations without device, browser, or last-access metadata.
 - Unknown schema, truncated data, or DPAPI decryption failure fails closed: no saved
   token is accepted. The bad file is renamed with a `.corrupt` suffix and the tray
   requires re-pairing.
@@ -516,6 +543,13 @@ not `Blocked` or `Allowed`.
   the page stops polling and removes clipboard text from the DOM.
 - On `pageshow`, and always when `event.persisted` is true, the page renders no cached
   items until a fresh authorized request completes.
+- The page includes a `Send to Windows` text area. It is disabled unless the current
+  session proof has a stored `write` or `readWrite` permission from pairing.
+- If `POST /clip-api/incoming-text` returns `403`, the page disables sending and
+  tells the user to re-pair from Windows with Write enabled.
+- A successful incoming send clears the mobile text area and reports only that text
+  is pending in the Windows tray. The mobile page never claims to have changed the
+  Windows clipboard.
 - The design cannot prevent iOS app-switcher screenshots taken before the page clears.
 
 The approved interaction sketch is in
@@ -552,9 +586,10 @@ Status conventions:
 - `204`: authorized clipboard snapshot is unchanged;
 - `400`: malformed input, invalid query, or invalid `Host`;
 - `401`: missing, expired, revoked, or failed pairing authorization;
+- `403`: authenticated route lacks the required permission;
 - `404`: unknown route;
 - `405`: route exists but HTTP method is not allowed;
-- `415`: pairing request is not `application/json`;
+- `415`: pairing or incoming text request is not `application/json`;
 - `413`: request too large;
 - `429`: rate limit exceeded;
 - `500`: unexpected error with no internal details.
@@ -572,6 +607,7 @@ The error-code mapping is:
 | 400 | `invalid_request` |
 | 401 from pairing | `pairing_failed` |
 | 401 from protected routes | `unauthorized` |
+| 403 | `forbidden` |
 | 404 | `not_found` |
 | 405 | `method_not_allowed` |
 | 413 | `request_too_large` |
@@ -589,13 +625,17 @@ Request, maximum 1 KiB:
 ```json
 {
   "code": "base64url-value",
-  "label": "My iPhone"
+  "label": "My iPhone",
+  "deviceName": "iPhone",
+  "browserName": "Safari"
 }
 ```
 
-The label is optional, trimmed to 64 Unicode scalar values, and stored only as
-authorization metadata. Unknown JSON properties, a missing code, malformed
-base64url, invalid label, or body other than a JSON object returns `400`.
+The label, device name, and browser name are optional, trimmed to 64 Unicode scalar
+values, and stored only as authorization metadata. Permission is not accepted in
+this request; the Windows-generated pairing code already carries it. Unknown JSON
+properties, a missing code, malformed base64url, invalid label or metadata, or body
+other than a JSON object returns `400`.
 
 A successful durable authorization sets the cookie, returns `200`, and returns:
 
@@ -603,7 +643,11 @@ A successful durable authorization sets the cookie, returns `200`, and returns:
 {
   "authorized": true,
   "authorizationId": "base64url-value",
-  "expiresAt": "2026-06-12T01:00:00Z"
+  "expiresAt": "2026-06-12T01:00:00Z",
+  "sessionProof": "base64url-value",
+  "permission": "read",
+  "deviceName": "iPhone",
+  "browserName": "Safari"
 }
 ```
 
@@ -643,10 +687,36 @@ Changed response:
 The changed snapshot response returns `200`. If `instance` matches and `since`
 equals the current version, return `204`. A `since` value greater than the current
 version returns `200` with the current snapshot. The endpoint is rate-limited to two
-requests per second per authorization.
+requests per second per authorization. The endpoint requires `Read`.
 
-Withdrawal and authorization revocation are Windows-local actions. The iPhone page
-has no mutation API.
+Withdrawal and authorization revocation are Windows-local actions.
+
+### `POST /clip-api/incoming-text`
+
+Request:
+
+```json
+{
+  "text": "exact text from iPhone"
+}
+```
+
+The endpoint requires `Write`. A valid read-only session returns `403 forbidden`
+without clearing the cookie. Missing, expired, revoked, or invalid sessions return
+`401 unauthorized` and clear the cookie when present. Text must be non-empty, valid
+UTF-16, and no more than 1,048,576 UTF-8 bytes.
+
+Success returns:
+
+```json
+{
+  "accepted": true,
+  "incomingId": "base64url-value"
+}
+```
+
+Success only means the text is pending in the Windows tray. It does not mean the
+Windows clipboard changed.
 
 ## Data Lifecycle
 
@@ -659,20 +729,27 @@ has no mutation API.
 6. `Allow once` moves it into shared history; `Discard` removes it.
 7. Adding a fourth shared item removes the oldest as part of the same version change.
 8. Withdrawing an item removes it and increments the snapshot version.
-9. Closing the application destroys shared, pending, and pairing-code content.
-10. DPAPI-protected authorization metadata remains until expiry or revocation.
-11. Pairing and revocation become externally successful only after authorization
+9. Write-enabled iPhone text enters the incoming queue grouped by authorization ID.
+10. `Apply to Windows Clipboard` writes one queued incoming item to the Windows
+    clipboard and removes it. `Discard incoming` removes it without writing.
+11. Authorization revoke, revoke-all, expiry cleanup, and app exit clear the matching
+    incoming queue items.
+12. Closing the application destroys shared, pending, incoming, and pairing-code
+    content.
+13. DPAPI-protected authorization metadata remains until expiry or revocation.
+14. Pairing and revocation become externally successful only after authorization
     persistence succeeds.
 
 ## Security Model
 
 The MVP defends against casual unauthorized browsing, stale or reused pairing links,
-accidental sharing of a few recognizable secret formats, browser HTTP caching, and
+accidental sharing of a few recognizable secret formats, browser caching, and
 application-managed persistence of clipboard history.
 
 It does not defend against:
 
-- a malicious device on the same network that can observe or modify HTTP traffic;
+- a malicious device on the same network that can attack the first-use self-signed
+  HTTPS certificate acceptance flow;
 - malware or another local process with access to the Windows clipboard, process
   memory, or user profile;
 - Windows paging, hibernation, or crash-dump capture;
@@ -686,6 +763,8 @@ Security-related UI uses precise wording:
 - `Pairing required` is allowed.
 - `Private`, `encrypted`, or `secure transfer` is not allowed for Approach A.
 - Sensitive detection says `Possible sensitive content detected`.
+- iPhone-to-Windows sending says `Pending incoming text`; it must not say the
+  Windows clipboard changed until the tray user clicks `Apply to Windows Clipboard`.
 - Permanent pairing carries a high-risk warning and is not the default.
 - Five hours is the default duration.
 
@@ -705,6 +784,10 @@ Security-related UI uses precise wording:
   count, without exposing content.
 - Text is invalid UTF-16 or exceeds 1 MiB: do not share it and notify locally.
 - Browser copy failed: select the full textarea and show manual-copy instructions.
+- Read-only session posts incoming text: return `403`, keep the authorization active,
+  and tell the user to re-pair with Write enabled.
+- Write-only session polls the Windows feed: return `403` without clearing the
+  cookie, and render an empty feed while `Send to Windows` remains available.
 
 ## Success Criteria
 
@@ -737,6 +820,13 @@ The MVP is complete only when all of these are true:
     one that began earlier, can subsequently return clipboard content.
 15. Restarting on a different selected IPv4 address durably removes stale
     authorizations before the server accepts requests.
+16. New pairings default to `Read only`; mobile clients cannot escalate permissions
+    during exchange.
+17. Read-only sessions can fetch clips but cannot post incoming text; Write-enabled
+    sessions can enqueue incoming text, and Windows clipboard writes happen only
+    after `Apply to Windows Clipboard`.
+18. Revoke, revoke-all, expiry cleanup, and app exit clear the relevant incoming
+    queues.
 
 ## Verification Plan
 
@@ -747,10 +837,12 @@ The MVP is complete only when all of these are true:
   discarded, withdrawn, and evicted text followed by same-value and different-value
   copies;
 - pairing entropy, expiry, atomic double exchange, token hashing, fixed-time compare,
-  all duration choices, and revocation;
-- authorization-coordinator ordering and concurrent validate/revoke behavior;
-- DPAPI serialization round trip, schema mismatch, truncation, decryption failure,
-  disk-full/write failure, and atomic replacement failure;
+  all duration choices, bound permissions, and revocation;
+- authorization-coordinator ordering, Read/Write lease gating, last-access metadata,
+  and concurrent validate/revoke behavior;
+- DPAPI serialization round trip, schema v3 metadata, legacy schema fallback, schema
+  mismatch, truncation, decryption failure, disk-full/write failure, and atomic
+  replacement failure;
 - UTF-8 sizes 1,048,575, 1,048,576, and 1,048,577 bytes, astral characters, line
   endings, whitespace-only text, and unpaired surrogates;
 - classifier positive, negative, boundary, large-input, and false-positive cases;
@@ -760,7 +852,9 @@ The MVP is complete only when all of these are true:
 
 - initial feed, unchanged feed, changed feed, and process-instance mismatch;
 - unauthorized, expired, revoked, and corrupt-persistence startup;
-- pairing request limits, rate limits, and concurrent exchange;
+- pairing request limits, metadata validation, rate limits, and concurrent exchange;
+- Read-only, Write-only, and Read+Write authorization behavior for `/clip-api/clips`
+  and `/clip-api/incoming-text`;
 - pairing persistence failure before response and revocation durability after forced
   termination;
 - revoke success racing with an already-authorized `GET`, asserting that success is
@@ -782,8 +876,11 @@ The MVP is complete only when all of these are true:
   unresponsive existing process;
 - clipboard contention;
 - notification and tray approval;
+- permission selector default, QR invalidation when permission changes, incoming
+  queue masking, `Apply to Windows Clipboard`, and `Discard incoming`;
 - restart clearing with authorization retained;
-- revoke one and revoke all;
+- revoke one, revoke all, expiry cleanup, and app exit clearing matching incoming
+  queue items;
 - no interface, one interface, multiple interfaces, DHCP address change, VPN present,
   Public profile, firewall blocked, and occupied port;
 - shutdown while network change and active feed requests are in progress;
@@ -796,6 +893,11 @@ The MVP is complete only when all of these are true:
 
 - current supported iOS Safari and one previous major iOS version when available;
 - first pairing, every duration, expiry, revocation, and browser cookie deletion;
+- Read-only pairing with disabled `Send to Windows`;
+- Write-only pairing with no Windows feed and enabled `Send to Windows`;
+- Read+Write pairing with both `Copy to iPhone` and `Send to Windows`;
+- incoming text accepted in Safari, shown as pending in the Windows tray, applied
+  only after tray approval, and discarded without writing when requested;
 - polling latency, Unicode preservation, maximum-size payload rendering;
 - standard copy success, legacy request state, and manual copy;
 - hidden/visible transitions, bfcache back navigation, pair-page back navigation,
@@ -815,8 +917,8 @@ For the first release:
 - Release artifacts contain a self-contained `win-x64` portable application and
   SHA-256 checksum.
 - Setup documentation includes the exact administrator firewall command, network
-  limitations, pairing, duration semantics, self-signed HTTPS warning, and Safari
-  fallback.
+  limitations, pairing, duration and permission semantics, self-signed HTTPS
+  warning, incoming-text approval, and Safari fallback.
 - Code signing and an installer are deferred. Documentation warns that an unsigned
   build may trigger Windows SmartScreen.
 

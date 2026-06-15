@@ -55,6 +55,7 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         "img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
 
     private const int PairBodyLimit = 1024;
+    private const int IncomingBodyLimit = StrictUtf8TextValidator.MaxUtf8Bytes + 4096;
     private const string SessionCookieName = "clip_session";
     private const string SessionProofHeaderName = "X-Clip-Session";
     private const string SessionCookiePath = "/clip-api";
@@ -71,6 +72,8 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger _logger;
     private readonly IClipResponseWriter _responseWriter;
+    private readonly IIncomingTextSink _incomingTextSink;
+    private readonly StrictUtf8TextValidator _textValidator = new();
     private readonly LocalWebHostTimeouts _timeouts;
     private readonly RequestRateLimiter _pairRateLimiter;
     private readonly RequestRateLimiter _clipRateLimiter;
@@ -92,7 +95,8 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         TimeProvider? timeProvider = null,
         ILoggerFactory? loggerFactory = null,
         IClipResponseWriter? responseWriter = null,
-        LocalWebHostTimeouts? timeouts = null)
+        LocalWebHostTimeouts? timeouts = null,
+        IIncomingTextSink? incomingTextSink = null)
         : this(
             endpoint,
             authorization,
@@ -101,7 +105,8 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
             timeProvider,
             loggerFactory,
             responseWriter,
-            timeouts)
+            timeouts,
+            incomingTextSink)
     {
     }
 
@@ -113,7 +118,8 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         TimeProvider? timeProvider = null,
         ILoggerFactory? loggerFactory = null,
         IClipResponseWriter? responseWriter = null,
-        LocalWebHostTimeouts? timeouts = null)
+        LocalWebHostTimeouts? timeouts = null,
+        IIncomingTextSink? incomingTextSink = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
         ArgumentNullException.ThrowIfNull(authorization);
@@ -134,6 +140,7 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         _loggerFactory = loggerFactory ?? LoggerFactory.Create(builder => builder.ClearProviders());
         _logger = _loggerFactory.CreateLogger<LocalWebHost>();
         _responseWriter = responseWriter ?? new JsonClipResponseWriter();
+        _incomingTextSink = incomingTextSink ?? NullIncomingTextSink.Instance;
         _timeouts = timeouts ?? LocalWebHostTimeouts.Production;
         _pairRateLimiter = RequestRateLimiter.CreatePairing(_timeProvider);
         _clipRateLimiter = RequestRateLimiter.CreateClips(_timeProvider);
@@ -159,7 +166,7 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         builder.WebHost.ConfigureKestrel(options =>
         {
             options.Listen(_endpoint, listen => listen.UseHttps(httpsCertificate));
-            options.Limits.MaxRequestBodySize = 1_048_576;
+            options.Limits.MaxRequestBodySize = IncomingBodyLimit;
             options.AddServerHeader = false;
         });
 
@@ -288,6 +295,23 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
                 }
 
                 await HandleClipsAsync(context);
+                return;
+            }
+
+            if (route == "/clip-api/incoming-text")
+            {
+                if (context.Request.Method != HttpMethods.Post)
+                {
+                    context.Response.Headers.Allow = HttpMethods.Post;
+                    await WriteErrorAsync(
+                        context,
+                        StatusCodes.Status405MethodNotAllowed,
+                        "method_not_allowed",
+                        "The method is not allowed.");
+                    return;
+                }
+
+                await HandleIncomingTextAsync(context);
                 return;
             }
 
@@ -455,7 +479,9 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
 
         if (request is null ||
             !TryValidatePairingCode(request.Code, out var pairingCode) ||
-            !TryNormalizeLabel(request.Label, out var label))
+            !TryNormalizeLabel(request.Label, out var label) ||
+            !TryNormalizeOptionalName(request.DeviceName, out var deviceName) ||
+            !TryNormalizeOptionalName(request.BrowserName, out var browserName))
         {
             await WriteErrorAsync(
                 context,
@@ -473,7 +499,9 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
                 pairingCode,
                 label,
                 _endpoint.Address,
-                _pairingDurationProvider()),
+                _pairingDurationProvider(),
+                deviceName,
+                browserName),
             exchangeCancellation.Token);
 
         if (!result.Succeeded)
@@ -530,7 +558,10 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
                 true,
                 EncodeGuid(authorization.Id),
                 authorization.ExpiresAtUtc,
-                sessionProof));
+                sessionProof,
+                FormatPermission(authorization.Permissions),
+                authorization.DeviceName,
+                authorization.BrowserName));
     }
 
     private async Task HandleClipsAsync(HttpContext context)
@@ -542,9 +573,28 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         }
 
         var leaseResult = _authorization.AcquireLease(
-            new AcquireLeaseRequest(authorizationId, token, _endpoint.Address, sessionProof));
+            new AcquireLeaseRequest(
+                authorizationId,
+                token,
+                _endpoint.Address,
+                sessionProof,
+                AuthorizationPermissions.Read));
         if (!leaseResult.Succeeded)
         {
+            if (leaseResult.Failure == AuthorizationFailure.PermissionDenied)
+            {
+                await WriteErrorAsync(
+                    context,
+                    StatusCodes.Status403Forbidden,
+                    "forbidden",
+                    "This pairing cannot read clips.");
+                return;
+            }
+
+            await CleanupIncomingForFailedAuthorizationAsync(
+                authorizationId,
+                leaseResult.Failure,
+                context.RequestAborted);
             await WriteUnauthorizedAsync(context);
             return;
         }
@@ -592,6 +642,131 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
             lease.RevocationToken,
             _handlerShutdown.Token);
         await _responseWriter.WriteAsync(context, response, linked.Token);
+    }
+
+    private async Task HandleIncomingTextAsync(HttpContext context)
+    {
+        if (!TryReadSession(context.Request, out var authorizationId, out var token, out var sessionProof))
+        {
+            await WriteUnauthorizedAsync(context);
+            return;
+        }
+
+        var leaseResult = _authorization.AcquireLease(
+            new AcquireLeaseRequest(
+                authorizationId,
+                token,
+                _endpoint.Address,
+                sessionProof,
+                AuthorizationPermissions.Write));
+        if (!leaseResult.Succeeded)
+        {
+            if (leaseResult.Failure == AuthorizationFailure.PermissionDenied)
+            {
+                await WriteErrorAsync(
+                    context,
+                    StatusCodes.Status403Forbidden,
+                    "forbidden",
+                    "This pairing cannot send text.");
+                return;
+            }
+
+            await CleanupIncomingForFailedAuthorizationAsync(
+                authorizationId,
+                leaseResult.Failure,
+                context.RequestAborted);
+            await WriteUnauthorizedAsync(context);
+            return;
+        }
+
+        using var lease = leaseResult.Lease!;
+        if (!IsJsonContentType(context.Request.ContentType))
+        {
+            await WriteErrorAsync(
+                context,
+                StatusCodes.Status415UnsupportedMediaType,
+                "unsupported_media_type",
+                "The request must use application/json.");
+            return;
+        }
+
+        if (context.Request.ContentLength > IncomingBodyLimit)
+        {
+            await WriteErrorAsync(
+                context,
+                StatusCodes.Status413PayloadTooLarge,
+                "request_too_large",
+                "The incoming text request is too large.");
+            return;
+        }
+
+        byte[] body;
+        try
+        {
+            body = await ReadBodyAsync(context.Request, IncomingBodyLimit, context.RequestAborted);
+        }
+        catch (RequestBodyTooLargeException)
+        {
+            await WriteErrorAsync(
+                context,
+                StatusCodes.Status413PayloadTooLarge,
+                "request_too_large",
+                "The incoming text request is too large.");
+            return;
+        }
+
+        IncomingTextPostRequest? request;
+        try
+        {
+            request = JsonSerializer.Deserialize<IncomingTextPostRequest>(body, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            request = null;
+        }
+
+        if (request?.Text is not { Length: > 0 } text)
+        {
+            await WriteErrorAsync(
+                context,
+                StatusCodes.Status400BadRequest,
+                "invalid_request",
+                "The incoming text request is invalid.");
+            return;
+        }
+
+        var validation = _textValidator.Validate(text);
+        if (validation.Status == TextValidationStatus.InvalidUtf16)
+        {
+            await WriteErrorAsync(
+                context,
+                StatusCodes.Status400BadRequest,
+                "invalid_request",
+                "The incoming text request is invalid.");
+            return;
+        }
+
+        if (validation.Status == TextValidationStatus.OverLimit)
+        {
+            await WriteErrorAsync(
+                context,
+                StatusCodes.Status413PayloadTooLarge,
+                "request_too_large",
+                "The incoming text request is too large.");
+            return;
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            context.RequestAborted,
+            lease.RevocationToken,
+            _handlerShutdown.Token);
+        var item = await _incomingTextSink.EnqueueAsync(
+            new IncomingTextRequest(leaseResult.Authorization!, text),
+            linked.Token);
+        await WriteJsonAsync(
+            context,
+            StatusCodes.Status200OK,
+            new IncomingTextPostResponse(true, EncodeGuid(item.IncomingId)));
     }
 
     private bool HasExpectedHost(HttpRequest request) =>
@@ -695,6 +870,64 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
 
         return true;
     }
+
+    private static bool TryNormalizeOptionalName(string? value, out string? name)
+    {
+        name = null;
+        if (value is null)
+        {
+            return true;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length == 0)
+        {
+            return true;
+        }
+
+        if (!IsValidScalarText(trimmed, 64))
+        {
+            return false;
+        }
+
+        name = trimmed;
+        return true;
+    }
+
+    private static bool IsValidScalarText(string value, int maxScalars)
+    {
+        var scalarCount = 0;
+        for (var index = 0; index < value.Length;)
+        {
+            var status = Rune.DecodeFromUtf16(
+                value.AsSpan(index),
+                out _,
+                out var consumed);
+            if (status != OperationStatus.Done)
+            {
+                return false;
+            }
+
+            scalarCount++;
+            if (scalarCount > maxScalars)
+            {
+                return false;
+            }
+
+            index += consumed;
+        }
+
+        return true;
+    }
+
+    private static string FormatPermission(AuthorizationPermissions permission) =>
+        permission switch
+        {
+            AuthorizationPermissions.Read => "read",
+            AuthorizationPermissions.Write => "write",
+            AuthorizationPermissions.ReadWrite => "readWrite",
+            _ => "read",
+        };
 
     private bool TryReadSession(
         HttpRequest request,
@@ -934,6 +1167,30 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
             context.Response.ContentType = "application/json; charset=utf-8";
             return context.Response.WriteAsJsonAsync(response, JsonOptions, cancellationToken);
         }
+    }
+
+    private ValueTask CleanupIncomingForFailedAuthorizationAsync(
+        Guid authorizationId,
+        AuthorizationFailure failure,
+        CancellationToken cancellationToken) =>
+        failure is AuthorizationFailure.Expired or AuthorizationFailure.NotFound
+            ? _incomingTextSink.ClearAuthorizationAsync(authorizationId, cancellationToken)
+            : ValueTask.CompletedTask;
+
+    private sealed class NullIncomingTextSink : IIncomingTextSink
+    {
+        public static NullIncomingTextSink Instance { get; } = new();
+
+        public ValueTask<IncomingTextItem> EnqueueAsync(
+            IncomingTextRequest request,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(new IncomingTextItem(
+                Guid.NewGuid(),
+                request.Authorization.Id,
+                request.Authorization.DeviceName,
+                request.Authorization.BrowserName,
+                request.Text,
+                TimeProvider.System.GetUtcNow()));
     }
 
     private sealed class RequestBodyTooLargeException : Exception;
