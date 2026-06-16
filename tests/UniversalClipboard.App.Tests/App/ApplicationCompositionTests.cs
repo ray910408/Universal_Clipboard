@@ -3,6 +3,8 @@ using System.Collections.Immutable;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Net;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Windows.Forms;
 using FluentAssertions;
@@ -10,6 +12,7 @@ using UniversalClipboard.App;
 using UniversalClipboard.App.App;
 using UniversalClipboard.App.Clipboard;
 using UniversalClipboard.App.Network;
+using UniversalClipboard.App.Security;
 using UniversalClipboard.App.Ui;
 using UniversalClipboard.App.Web;
 using UniversalClipboard.Core.Authorization;
@@ -192,6 +195,133 @@ public sealed class ApplicationCompositionTests
     }
 
     [Fact]
+    public void Https_identity_fingerprint_is_presented_in_tray_state()
+    {
+        var fixture = new Fixture();
+        fixture.HttpsCertificates.Identity = new HttpsCertificateIdentity(
+            IPAddress.Parse("192.168.1.5"),
+            "00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF",
+            "0011-2233-4455",
+            new DateTimeOffset(2027, 6, 12, 0, 0, 0, TimeSpan.Zero));
+
+        fixture.Context.RefreshView();
+
+        fixture.Window.State.HttpsIdentity.Status.Should().Be("Ready");
+        fixture.Window.State.HttpsIdentity.ShortCode.Should().Be("0011-2233-4455");
+        fixture.Window.State.HttpsIdentity.Fingerprint.Should().Be(
+            "00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF");
+        fixture.Window.State.HttpsIdentity.Expiry.Should().Be("2027-06-12 00:00 UTC");
+        fixture.Window.State.HttpsIdentity.DisplayText.Should().Contain("0011-2233-4455");
+        fixture.Window.State.HttpsIdentity.DisplayText.Should().Contain(
+            "00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF");
+    }
+
+    [Fact]
+    public void Tray_window_renders_full_https_fingerprint()
+    {
+        using var window = new TrayWindow();
+        var fingerprint =
+            "00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF";
+        var state = TrayViewState.Empty with
+        {
+            HttpsIdentity = new HttpsIdentityViewState(
+                "Ready",
+                "0011-2233-4455",
+                fingerprint,
+                "2027-06-12 00:00 UTC",
+                $"Ready - 0011-2233-4455 - expires 2027-06-12 00:00 UTC{Environment.NewLine}" +
+                $"SHA-256 {fingerprint}"),
+        };
+
+        window.Render(state);
+
+        window.Controls.OfType<Label>()
+            .Single(label => label.Text.Contains("SHA-256", StringComparison.Ordinal))
+            .Text.Should()
+            .Contain(fingerprint);
+    }
+
+    [Fact]
+    public async Task Reset_https_identity_stops_resets_revokes_clears_pairing_and_restarts_when_running()
+    {
+        var fixture = new Fixture();
+        fixture.Sharing.State = RunningState(
+            "https://192.168.1.5:43127/",
+            FirewallRuleStatus.Unknown);
+        fixture.Sharing.StartEntered = () => fixture.Sharing.Events.Enqueue("sharing:start");
+        fixture.Context.CreatePairingCode();
+        fixture.Context.EnqueueIncomingText(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "Phone",
+            "Safari",
+            "pending text");
+
+        await fixture.Context.ResetHttpsIdentityAsync();
+
+        fixture.Sharing.Events.Should().ContainInOrder(
+            "sharing:shutdown",
+            "sharing:start");
+        fixture.HttpsCertificates.ResetCount.Should().Be(1);
+        fixture.Authorizations.RevokeAllCount.Should().Be(1);
+        fixture.PairingCodes.InvalidateCount.Should().Be(1);
+        fixture.Context.ViewState.Pairing.Should().BeNull();
+        fixture.Context.ViewState.PendingIncomingItems.Should().BeEmpty();
+        fixture.Notifications.Items.Should().Contain(notification =>
+            notification.Title == "HTTPS identity reset" &&
+            notification.Body.Contains("Safari will ask you to trust the new certificate", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Reset_https_identity_does_not_reset_identity_when_revoke_all_fails()
+    {
+        var fixture = new Fixture();
+        fixture.Sharing.State = RunningState(
+            "https://192.168.1.5:43127/",
+            FirewallRuleStatus.Unknown);
+        fixture.Sharing.StartEntered = () => fixture.Sharing.Events.Enqueue("sharing:start");
+        fixture.Authorizations.RevokeAllFailure = AuthorizationFailure.PersistenceFailed;
+        fixture.Context.CreatePairingCode();
+
+        await fixture.Context.ResetHttpsIdentityAsync();
+
+        fixture.Sharing.Events.Should().ContainInOrder(
+            "sharing:shutdown",
+            "sharing:start");
+        fixture.HttpsCertificates.ResetCount.Should().Be(0);
+        fixture.Authorizations.RevokeAllCount.Should().Be(1);
+        fixture.PairingCodes.InvalidateCount.Should().Be(0);
+        fixture.Context.ViewState.Pairing.Should().NotBeNull();
+        fixture.Notifications.Items.Should().Contain(notification =>
+            notification.Title == "HTTPS identity was not reset" &&
+            notification.Body.Contains("PersistenceFailed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Reset_https_identity_restarts_when_certificate_delete_fails_after_revoke()
+    {
+        var fixture = new Fixture();
+        fixture.Sharing.State = RunningState(
+            "https://192.168.1.5:43127/",
+            FirewallRuleStatus.Unknown);
+        fixture.Sharing.StartEntered = () => fixture.Sharing.Events.Enqueue("sharing:start");
+        fixture.HttpsCertificates.ThrowOnReset = true;
+        fixture.Context.CreatePairingCode();
+
+        await fixture.Context.ResetHttpsIdentityAsync();
+
+        fixture.Sharing.Events.Should().ContainInOrder(
+            "sharing:shutdown",
+            "sharing:start");
+        fixture.Authorizations.RevokeAllCount.Should().Be(1);
+        fixture.HttpsCertificates.ResetCount.Should().Be(1);
+        fixture.PairingCodes.InvalidateCount.Should().Be(1);
+        fixture.Context.ViewState.Pairing.Should().BeNull();
+        fixture.Notifications.Items.Should().Contain(notification =>
+            notification.Title == "HTTPS identity was not reset" &&
+            notification.Body.Contains("UnauthorizedAccessException", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Secondary_pipe_failure_exits_without_blocking_error_reporter()
     {
         var reports = new List<string>();
@@ -230,6 +360,7 @@ public sealed class ApplicationCompositionTests
             .Contain(
                 "Paired devices",
                 "Permission",
+                "HTTPS identity",
                 "Pending incoming text");
     }
 
@@ -250,6 +381,7 @@ public sealed class ApplicationCompositionTests
             "Pair",
             "Revoke",
             "Revoke all",
+            "Reset HTTPS",
             "Exit");
 
         foreach (var pendingAction in pendingActions)
@@ -950,6 +1082,21 @@ public sealed class ApplicationCompositionTests
         return stream.ToArray();
     }
 
+    private static X509Certificate2 CreateTestCertificate()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var request = new CertificateRequest(
+            "CN=Test",
+            key,
+            HashAlgorithmName.SHA256);
+        using var certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddMinutes(-5),
+            DateTimeOffset.UtcNow.AddDays(1));
+        return X509CertificateLoader.LoadPkcs12(
+            certificate.Export(X509ContentType.Pkcs12),
+            password: null);
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -970,6 +1117,8 @@ public sealed class ApplicationCompositionTests
         public FakePairingCodeProvider PairingCodes { get; } = new();
 
         public FakeAuthorizationAdministration Authorizations { get; } = new();
+
+        public FakeHttpsCertificateProvider HttpsCertificates { get; } = new();
 
         public RecordingClipboardContentStore Clipboard { get; }
 
@@ -995,6 +1144,7 @@ public sealed class ApplicationCompositionTests
                     Clipboard,
                     IncomingClipboard,
                     Qr,
+                    HttpsCertificates,
                     Clock));
         }
     }
@@ -1026,6 +1176,12 @@ public sealed class ApplicationCompositionTests
         }
 
         public event EventHandler? PairingCodeRequested
+        {
+            add { }
+            remove { }
+        }
+
+        public event EventHandler? ResetHttpsIdentityRequested
         {
             add { }
             remove { }
@@ -1239,6 +1395,10 @@ public sealed class ApplicationCompositionTests
 
         public bool BlockRevokeAll { get; set; }
 
+        public AuthorizationFailure RevokeAllFailure { get; set; }
+
+        public int RevokeAllCount { get; private set; }
+
         public TaskCompletionSource RevokeEntered { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1267,9 +1427,15 @@ public sealed class ApplicationCompositionTests
             CancellationToken cancellationToken = default)
         {
             RevokeAllEntered.TrySetResult();
+            RevokeAllCount++;
             if (BlockRevokeAll)
             {
                 await _releaseRevokeAll.Task.WaitAsync(cancellationToken);
+            }
+
+            if (RevokeAllFailure != AuthorizationFailure.None)
+            {
+                return MutationResult(RevokeAllFailure, Authorizations);
             }
 
             Authorizations = [];
@@ -1284,6 +1450,46 @@ public sealed class ApplicationCompositionTests
         public void CompleteRevoke() => _releaseRevoke.TrySetResult();
 
         public void CompleteRevokeAll() => _releaseRevokeAll.TrySetResult();
+    }
+
+    private sealed class FakeHttpsCertificateProvider : IHttpsCertificateProvider
+    {
+        public HttpsCertificateIdentity? Identity { get; set; }
+
+        public int ResetCount { get; private set; }
+
+        public bool ThrowOnReset { get; set; }
+
+        public HttpsCertificateIdentity? CurrentIdentity => Identity;
+
+        public Task<HttpsCertificateLease> GetOrCreateAsync(
+            IPAddress address,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new HttpsCertificateLease(
+                Identity ?? throw new NotSupportedException(),
+                CreateTestCertificate()));
+        }
+
+        public Task ResetAsync(CancellationToken cancellationToken = default)
+        {
+            ResetCount++;
+            if (ThrowOnReset)
+            {
+                throw new UnauthorizedAccessException("locked");
+            }
+
+            Identity = null;
+            return Task.CompletedTask;
+        }
+
+        public Task AcknowledgeAuthorizationResetAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class RecordingClipboardContentStore(ConcurrentQueue<string>? events = null)

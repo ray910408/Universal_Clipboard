@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using QRCoder;
 using UniversalClipboard.App.Clipboard;
 using UniversalClipboard.App.Network;
+using UniversalClipboard.App.Security;
 using UniversalClipboard.App.Web;
 using UniversalClipboard.Core.Authorization;
 using UniversalClipboard.Core.Clipboard;
@@ -21,6 +22,7 @@ public sealed record ClipboardApplicationServices(
     IClipboardContentStore Clipboard,
     IWindowsClipboardWriter IncomingClipboard,
     IQrCodeRenderer QrCodeRenderer,
+    IHttpsCertificateProvider HttpsCertificates,
     TimeProvider? TimeProvider = null,
     Func<CancellationToken, Task>? ExitAsync = null);
 
@@ -45,6 +47,8 @@ public interface ITrayCommandSource
     event EventHandler? ExitRequested;
 
     event EventHandler? PairingCodeRequested;
+
+    event EventHandler? ResetHttpsIdentityRequested;
 
     event EventHandler<AuthorizationDuration>? AuthorizationDurationChanged;
 
@@ -134,6 +138,22 @@ public sealed record PairingViewState(
     byte[] QrCodePng,
     DateTimeOffset ExpiresAtUtc);
 
+public sealed record HttpsIdentityViewState(
+    string Status,
+    string ShortCode,
+    string Fingerprint,
+    string Expiry,
+    string DisplayText)
+{
+    public static HttpsIdentityViewState NotGenerated { get; } =
+        new(
+            "Not generated",
+            "",
+            "",
+            "Not generated",
+            "Not generated until sharing starts");
+}
+
 public sealed record BrowserAuthorizationRow(
     Guid AuthorizationId,
     string Label,
@@ -186,6 +206,7 @@ public sealed record TrayViewState(
     ImmutableArray<DurationOptionRow> DurationOptions,
     ImmutableArray<PermissionOptionRow> PermissionOptions,
     PairingViewState? Pairing,
+    HttpsIdentityViewState HttpsIdentity,
     ImmutableArray<BrowserAuthorizationRow> PairedBrowsers,
     ImmutableArray<ClipboardItemRow> SharedItems,
     ImmutableArray<PendingClipboardViewItem> PendingSensitiveItems,
@@ -207,6 +228,7 @@ public sealed record TrayViewState(
             ClipboardApplicationContext.DurationOptions,
             ClipboardApplicationContext.PermissionOptions,
             null,
+            HttpsIdentityViewState.NotGenerated,
             ImmutableArray<BrowserAuthorizationRow>.Empty,
             ImmutableArray<ClipboardItemRow>.Empty,
             ImmutableArray<PendingClipboardViewItem>.Empty,
@@ -313,6 +335,66 @@ public sealed class ClipboardApplicationContext :
             _pairing = null;
         }
 
+        RefreshView();
+    }
+
+    public async Task ResetHttpsIdentityAsync(CancellationToken cancellationToken = default)
+    {
+        var wasRunning = _services.Sharing.CurrentState.Status == NetworkSharingStatus.Running;
+        if (wasRunning)
+        {
+            await _services.Sharing.ShutdownAsync(cancellationToken);
+        }
+
+        var revoke = await _services.Authorizations.RevokeAllAsync(cancellationToken);
+        if (!revoke.Succeeded)
+        {
+            if (wasRunning)
+            {
+                await _services.Sharing.StartAsync(cancellationToken);
+            }
+
+            NotifyAndShow(
+                "HTTPS identity was not reset",
+                $"Authorizations were not revoked. Reason: {revoke.Failure}");
+            RefreshView();
+            return;
+        }
+
+        lock (_gate)
+        {
+            _pairing = null;
+        }
+
+        _services.PairingCodes.Invalidate();
+        ClearAllIncoming();
+        try
+        {
+            await _services.HttpsCertificates.ResetAsync(cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException)
+        {
+            if (wasRunning)
+            {
+                await _services.Sharing.StartAsync(cancellationToken);
+            }
+
+            NotifyAndShow(
+                "HTTPS identity was not reset",
+                $"Authorizations were revoked, but HTTPS identity reset failed. Reason: {exception.GetType().Name}");
+            RefreshView();
+            return;
+        }
+
+        if (wasRunning)
+        {
+            await _services.Sharing.StartAsync(cancellationToken);
+        }
+
+        NotifyAndShow(
+            "HTTPS identity reset",
+            "Safari will ask you to trust the new certificate the next time you pair.");
         RefreshView();
     }
 
@@ -741,6 +823,7 @@ public sealed class ClipboardApplicationContext :
             DurationOptions,
             PermissionOptions,
             pairing,
+            BuildHttpsIdentity(_services.HttpsCertificates.CurrentIdentity),
             ToAuthorizationRows(_services.Authorizations.List()),
             _services.Clipboard.HistorySnapshot.Items
                 .Reverse()
@@ -781,6 +864,8 @@ public sealed class ClipboardApplicationContext :
             CreatePairingCode();
             return Task.CompletedTask;
         });
+        commands.ResetHttpsIdentityRequested += (_, _) => RunCommand(
+            () => ResetHttpsIdentityAsync());
         commands.AuthorizationDurationChanged += (_, duration) => RunCommand(() =>
         {
             SetAuthorizationDuration(duration);
@@ -1015,6 +1100,24 @@ public sealed class ClipboardApplicationContext :
         network.IsPortListening
             ? $"Listening on TCP {network.Port}"
             : $"Not listening on TCP {network.Port}";
+
+    private static HttpsIdentityViewState BuildHttpsIdentity(
+        HttpsCertificateIdentity? identity)
+    {
+        if (identity is null)
+        {
+            return HttpsIdentityViewState.NotGenerated;
+        }
+
+        var expiry = FormatUtc(identity.NotAfterUtc);
+        return new HttpsIdentityViewState(
+            "Ready",
+            identity.ShortCode,
+            identity.FingerprintSha256,
+            expiry,
+            $"Ready - {identity.ShortCode} - expires {expiry}{Environment.NewLine}" +
+            $"SHA-256 {identity.FingerprintSha256}");
+    }
 
     private static string? BuildBlockingWarning(
         NetworkSharingState network,
@@ -1265,6 +1368,7 @@ internal sealed class LocalWebHostController(
     IAuthorizationService authorization,
     Func<ClipboardSnapshot> snapshotProvider,
     Func<AuthorizationDuration> durationProvider,
+    IHttpsCertificateProvider? httpsCertificates = null,
     IIncomingTextSink? incomingTextSink = null,
     TimeProvider? timeProvider = null,
     Func<IPEndPoint, ILocalWebHostInstance>? hostFactory = null)
@@ -1285,12 +1389,15 @@ internal sealed class LocalWebHostController(
             }
 
             host = hostFactory?.Invoke(endpoint) ?? new LocalWebHost(
-                endpoint,
-                authorization,
-                snapshotProvider,
-                durationProvider,
-                timeProvider,
-                incomingTextSink: incomingTextSink);
+                endpoint: endpoint,
+                authorization: authorization,
+                snapshotProvider: snapshotProvider,
+                pairingDurationProvider: durationProvider,
+                timeProvider: timeProvider,
+                incomingTextSink: incomingTextSink,
+                httpsCertificates: httpsCertificates ?? new DpapiHttpsCertificateProvider(
+                    timeProvider: timeProvider),
+                authorizationAdministration: authorization as IAuthorizationAdministration);
             _host = host;
         }
 

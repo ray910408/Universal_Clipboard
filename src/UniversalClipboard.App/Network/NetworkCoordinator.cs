@@ -751,6 +751,16 @@ public sealed class NetworkCoordinator
                 _firewall.Inspect(LocalWebHost.Port).Status,
                 exception.Message));
         }
+        catch (LocalWebHostAuthorizationResetException)
+        {
+            if (!IsEvaluationCurrent(lifecycleVersion))
+            {
+                return await StopStaleEvaluationAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            _runningEndpoint = null;
+            return Publish(AuthPersistenceFailedState(selected, address));
+        }
 
         if (!IsEvaluationCurrent(lifecycleVersion))
         {
