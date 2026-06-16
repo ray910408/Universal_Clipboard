@@ -82,14 +82,15 @@ cloud database, no iPhone app, and no application-managed clipboard archive on d
   and require pairing again.
 - The baseline Safari copy path is manual copy from visibly selected text. Direct
   one-tap copy is an opportunistic enhancement, not a release dependency.
-- The MVP serves the local page over an ephemeral self-signed HTTPS certificate only
-  to avoid passive LAN sniffing during a short-lived local session. This is not a
-  full local trust model: it has no private CA installation, persisted certificate
-  pinning, or first-use fingerprint verification, so it does not by itself defeat an
-  active same-network first-use MITM. The compensating MVP controls are private-Wi-Fi
-  scope, one-time pairing codes, host/IP-bound HttpOnly cookies, independent
-  same-origin session proof headers, no CORS grant, rate limits, and clear release
-  notes that Ray must approve before local use.
+- The MVP serves the local page over a persisted self-signed HTTPS certificate for
+  the selected IPv4 address. The certificate is protected with current-user DPAPI
+  and follows a trust-on-first-use model. This is not a full local trust model: it
+  has no private CA installation or automatic browser certificate pinning, so it
+  does not by itself defeat an active same-network first-use MITM. The compensating
+  MVP controls are private-Wi-Fi scope, one-time pairing codes, host/IP-bound
+  HttpOnly cookies, independent same-origin session proof headers, no CORS grant,
+  rate limits, tray-visible HTTPS fingerprint, a deliberate reset action, and clear
+  release notes that Ray must approve before local use.
 
 ## Premises
 
@@ -135,8 +136,8 @@ scope control as a release requirement.
 
 ### Approach A: Local Self-Signed HTTPS MVP
 
-Use a Windows tray application with an embedded Kestrel HTTPS server backed by an
-ephemeral self-signed certificate and a responsive, framework-free web page.
+Use a Windows tray application with an embedded Kestrel HTTPS server backed by a
+persisted self-signed certificate and a responsive, framework-free web page.
 
 - Effort: Small
 - Risk: Medium
@@ -149,7 +150,7 @@ ephemeral self-signed certificate and a responsive, framework-free web page.
   - Avoids passive LAN sniffing compared with cleartext HTTP.
   - Safari may show a certificate warning because the certificate is self-signed.
   - The first certificate acceptance is not protected against an active same-network
-    MITM because there is no private CA or pinning.
+    MITM because there is no private CA or automatic browser certificate pinning.
   - Safari may require manual copy after text selection.
   - LAN routing and Windows Firewall can make setup unreliable.
 
@@ -189,8 +190,8 @@ encrypted snapshots and paired browsers retrieve and decrypt them.
 
 ## Recommended Approach
 
-Build Approach A for the MVP: local Kestrel HTTPS with an ephemeral self-signed
-certificate. Approach C is a future redesign, not code that will be prebuilt behind
+Build Approach A for the MVP: local Kestrel HTTPS with a persisted self-signed
+TOFU certificate. Approach C is a future redesign, not code that will be prebuilt behind
 speculative interfaces.
 
 Use `.NET 10 LTS`, C#, WinForms, and an in-process ASP.NET Core Kestrel server. .NET
@@ -211,7 +212,8 @@ The following requested features remain in the MVP:
 To keep that scope viable:
 
 - no mDNS or automatic discovery;
-- no private CA, certificate-profile installation, or certificate pinning;
+- no private CA, certificate-profile installation, or automatic browser certificate
+  pinning;
 - no PWA;
 - no WebSocket or SSE;
 - no cloud code;
@@ -561,6 +563,20 @@ The local listener serves the page and API over self-signed HTTPS on the selecte
 IPv4 address and TCP `43127`. HTTP below refers to HTTP semantics inside that HTTPS
 transport, not cleartext HTTP.
 
+The app persists one HTTPS identity per selected IPv4 address under
+`%LOCALAPPDATA%\UniversalClipboard\https-certificates.v1.bin`, protected with
+Windows DPAPI for the current user. Restarting the app on the same selected address
+reuses the same self-signed certificate. The tray displays the SHA-256 fingerprint,
+a short code, and certificate expiry. `Reset HTTPS` deletes the persisted identity,
+revokes pairings, invalidates any pairing code, and restarts sharing with a new
+certificate when sharing was running.
+
+If the HTTPS identity is created while persisted authorizations already exist, or a
+stored identity is replaced because it is corrupt, expired, or bound to the wrong
+selected IPv4 address, the host revokes existing authorizations before Kestrel
+starts serving with the replacement certificate. If that revocation cannot be
+persisted, sharing remains paused in the authorization-persistence-failed state.
+
 All JSON uses UTF-8 and `Content-Type: application/json`. Every static and API
 response uses `Cache-Control: no-store, max-age=0`, `Pragma: no-cache`,
 `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self';
@@ -749,7 +765,7 @@ application-managed persistence of clipboard history.
 It does not defend against:
 
 - a malicious device on the same network that can attack the first-use self-signed
-  HTTPS certificate acceptance flow;
+  HTTPS certificate acceptance flow before TOFU continuity exists;
 - malware or another local process with access to the Windows clipboard, process
   memory, or user profile;
 - Windows paging, hibernation, or crash-dump capture;
@@ -840,9 +856,11 @@ The MVP is complete only when all of these are true:
   all duration choices, bound permissions, and revocation;
 - authorization-coordinator ordering, Read/Write lease gating, last-access metadata,
   and concurrent validate/revoke behavior;
-- DPAPI serialization round trip, schema v3 metadata, legacy schema fallback, schema
-  mismatch, truncation, decryption failure, disk-full/write failure, and atomic
-  replacement failure;
+- DPAPI authorization serialization round trip, schema v3 metadata, legacy schema
+  fallback, schema mismatch, truncation, decryption failure, disk-full/write
+  failure, and atomic replacement failure;
+- DPAPI HTTPS identity persistence, per-IPv4 separation, corrupt-file quarantine,
+  expiry regeneration, SAN mismatch regeneration, current-user ACLs, and reset;
 - UTF-8 sizes 1,048,575, 1,048,576, and 1,048,577 bytes, astral characters, line
   endings, whitespace-only text, and unpaired surrogates;
 - classifier positive, negative, boundary, large-input, and false-positive cases;
@@ -918,7 +936,8 @@ For the first release:
   SHA-256 checksum.
 - Setup documentation includes the exact administrator firewall command, network
   limitations, pairing, duration and permission semantics, self-signed HTTPS
-  warning, incoming-text approval, and Safari fallback.
+  warning, TOFU identity reset behavior, incoming-text approval, and Safari
+  fallback.
 - Code signing and an installer are deferred. Documentation warns that an unsigned
   build may trigger Windows SmartScreen.
 

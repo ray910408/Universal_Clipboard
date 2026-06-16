@@ -31,9 +31,11 @@ Launch the published binary on a trusted Private LAN. Windows management remains
 the Tray UI. iPhone Safari uses the tray-reported LAN URL, for example
 `https://<LAN-IP>:43127/`.
 
-Because the MVP uses an ephemeral self-signed HTTPS certificate, command-line smoke
+Because the MVP uses a persisted self-signed HTTPS certificate, command-line smoke
 checks may need explicit certificate bypass. This bypass is for release testing only;
-it does not make the MVP a complete trust model.
+it does not make the MVP a complete trust model. The tray HTTPS identity should stay
+stable across app restarts on the same selected IPv4 address unless **Reset HTTPS**
+is used.
 
 Example endpoint checks:
 
@@ -48,6 +50,9 @@ Expected result:
 - [ ] TCP listener appears on the tray-selected LAN IPv4 address and port `43127`;
 - [ ] `GET https://<LAN-IP>:43127/` returns `200`;
 - [ ] unpaired `GET https://<LAN-IP>:43127/clip-api/clips` returns `401`;
+- [ ] tray HTTPS identity short code is unchanged after app restart on the same
+      selected IPv4 address;
+- [ ] **Reset HTTPS** changes the tray HTTPS identity and revokes existing pairings;
 - [ ] second launch activates the existing tray owner instead of creating a second
       long-running owner process;
 - [ ] tray **Exit** removes the TCP listener.

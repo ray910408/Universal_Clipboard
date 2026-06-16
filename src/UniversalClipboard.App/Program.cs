@@ -64,11 +64,13 @@ internal static class Program
                 new SessionTokenService()).GetAwaiter().GetResult();
             var clipboard = new ClipboardPipelineContentStore();
             var incomingSink = new DeferredIncomingTextSink(() => context);
+            var httpsCertificates = new DpapiHttpsCertificateProvider();
 
             hostController = new LocalWebHostController(
                 authorization,
                 () => clipboard.HistorySnapshot,
                 () => context?.SelectedDuration ?? AuthorizationDuration.FiveHours,
+                httpsCertificates,
                 incomingSink);
             var network = new NetworkCoordinator(
                 new WindowsNetworkEnvironment(),
@@ -91,6 +93,7 @@ internal static class Program
                     clipboard,
                     new WindowsClipboardWriter(scheduler),
                     new QrCodeRenderer(),
+                    httpsCertificates,
                     ExitAsync: cancellationToken => ShutdownFromTrayAsync(
                         () => monitor,
                         value => monitor = value,

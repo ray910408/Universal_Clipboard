@@ -25,6 +25,7 @@ public sealed partial class TrayWindow :
         stopButton.Click += (_, _) => StopSharingRequested?.Invoke(this, EventArgs.Empty);
         exitButton.Click += (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty);
         pairButton.Click += (_, _) => PairingCodeRequested?.Invoke(this, EventArgs.Empty);
+        resetHttpsIdentityButton.Click += (_, _) => ResetHttpsIdentityRequested?.Invoke(this, EventArgs.Empty);
         revokeAllButton.Click += (_, _) => RevokeAllAuthorizationsRequested?.Invoke(this, EventArgs.Empty);
         revokeButton.Click += (_, _) => RaiseSelectedBrowser(RevokeAuthorizationRequested);
         allowButton.Click += (_, _) => RaiseSelectedPending(AllowPendingRequested);
@@ -44,6 +45,8 @@ public sealed partial class TrayWindow :
     public event EventHandler? ExitRequested;
 
     public event EventHandler? PairingCodeRequested;
+
+    public event EventHandler? ResetHttpsIdentityRequested;
 
     public event EventHandler<AuthorizationDuration>? AuthorizationDurationChanged;
 
@@ -85,6 +88,7 @@ public sealed partial class TrayWindow :
         firewallSetupValue.Text = state.FirewallSetupHelp;
         warningLabel.Text = state.BlockingWarning ?? "";
         retryValue.Text = state.ClipboardRetryExhaustionCount.ToString();
+        httpsIdentityValue.Text = state.HttpsIdentity.DisplayText;
         RenderDurationOptions(state);
         RenderPermissionOptions(state);
         RenderInterfaceOptions(state);

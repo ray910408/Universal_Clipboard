@@ -1,11 +1,14 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using UniversalClipboard.App.Security;
 using UniversalClipboard.App.Web;
 using UniversalClipboard.Core.Authorization;
 using UniversalClipboard.Core.Clipboard;
@@ -42,6 +45,143 @@ public sealed class LocalWebHostTests
         response.StatusCode.Should().Be(HttpStatusCode.NoContent);
         (await response.Content.ReadAsByteArrayAsync()).Should().BeEmpty();
         AssertSecurityHeaders(response);
+    }
+
+    [Fact]
+    public async Task Start_uses_injected_https_certificate_provider_for_selected_endpoint()
+    {
+        var httpsCertificates = new RecordingHttpsCertificateProvider();
+        await using var fixture = await HostFixture.StartAsync(
+            httpsCertificates: httpsCertificates);
+
+        var response = await fixture.Client.GetAsync("/");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        httpsCertificates.RequestedAddresses.Should().Equal(IPAddress.Loopback);
+    }
+
+    [Theory]
+    [InlineData(HttpsCertificateIdentityStatus.Created)]
+    [InlineData(HttpsCertificateIdentityStatus.ReplacedStoredIdentity)]
+    public async Task Start_revokes_existing_authorizations_before_serving_new_https_identity(
+        HttpsCertificateIdentityStatus status)
+    {
+        var persistence = new FakeAuthorizationPersistence(
+            new AuthorizationDocument(
+                [AuthorizationTestFactory.CreateRecord(
+                    Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                    tokenByte: 9)]));
+        var httpsCertificates = new RecordingHttpsCertificateProvider
+        {
+            Status = status,
+        };
+
+        await using var fixture = await HostFixture.StartAsync(
+            persistence: persistence,
+            httpsCertificates: httpsCertificates);
+        var response = await fixture.Client.GetAsync("/");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        fixture.Coordinator.List().Should().BeEmpty();
+        persistence.Document.Authorizations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Start_retries_authorization_reset_when_new_https_identity_revoke_failed()
+    {
+        var certificateDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "UniversalClipboard.Tests",
+            Guid.NewGuid().ToString("N"));
+        var certificatePath = Path.Combine(certificateDirectory, "https-certificates.v1.bin");
+        var persistence = new FakeAuthorizationPersistence(
+            new AuthorizationDocument(
+                [AuthorizationTestFactory.CreateRecord(
+                    Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                    tokenByte: 9)]));
+        try
+        {
+            persistence.OnSaveAsync = _ => throw new IOException("disk full");
+            var firstProvider = new DpapiHttpsCertificateProvider(
+                certificatePath,
+                TimeProvider.System);
+            await using (var first = await HostFixture.CreateAsync(
+                persistence: persistence,
+                httpsCertificates: firstProvider))
+            {
+                var start = async () => await first.Host.StartAsync();
+
+                await start.Should().ThrowAsync<LocalWebHostAuthorizationResetException>();
+                firstProvider.CurrentIdentity!.Status.Should().Be(
+                    HttpsCertificateIdentityStatus.Created);
+            }
+
+            persistence.OnSaveAsync = null;
+            var secondProvider = new DpapiHttpsCertificateProvider(
+                certificatePath,
+                TimeProvider.System);
+            await using var second = await HostFixture.StartAsync(
+                persistence: persistence,
+                httpsCertificates: secondProvider);
+            var response = await second.Client.GetAsync("/");
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+            secondProvider.CurrentIdentity!.Status.Should().Be(
+                HttpsCertificateIdentityStatus.ReplacedStoredIdentity);
+            second.Coordinator.List().Should().BeEmpty();
+            persistence.Document.Authorizations.Should().BeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(certificateDirectory))
+            {
+                Directory.Delete(certificateDirectory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Start_serves_https_with_dpapi_certificate_provider_and_reuses_identity()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "UniversalClipboard.Tests",
+            Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "https-certificates.v1.bin");
+        try
+        {
+            var firstProvider = new DpapiHttpsCertificateProvider(path, TimeProvider.System);
+            string firstFingerprint;
+            await using (var first = await HostFixture.StartAsync(
+                httpsCertificates: firstProvider))
+            {
+                var response = await first.Client.GetAsync("/");
+
+                response.StatusCode.Should().Be(HttpStatusCode.OK);
+                firstProvider.CurrentIdentity!.Status.Should().Be(
+                    HttpsCertificateIdentityStatus.Created);
+                firstFingerprint = firstProvider.CurrentIdentity.FingerprintSha256;
+            }
+
+            var secondProvider = new DpapiHttpsCertificateProvider(path, TimeProvider.System);
+            await using (var second = await HostFixture.StartAsync(
+                httpsCertificates: secondProvider))
+            {
+                var response = await second.Client.GetAsync("/");
+
+                response.StatusCode.Should().Be(HttpStatusCode.OK);
+                secondProvider.CurrentIdentity!.Status.Should().Be(
+                    HttpsCertificateIdentityStatus.Reused);
+                secondProvider.CurrentIdentity.FingerprintSha256.Should().Be(firstFingerprint);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
     }
 
     [Theory]
@@ -1003,6 +1143,7 @@ public sealed class LocalWebHostTests
             timeouts: new LocalWebHostTimeouts(
                 TimeSpan.FromMilliseconds(75),
                 TimeSpan.FromMilliseconds(250)),
+            httpsCertificates: new RecordingHttpsCertificateProvider(),
             authorizationServiceFactory: coordinator =>
             {
                 recording = new RecordingAuthorizationService(coordinator);
@@ -1138,6 +1279,7 @@ public sealed class LocalWebHostTests
             AuthorizationDuration pairingDuration = AuthorizationDuration.FiveHours,
             Func<AuthorizationDuration>? pairingDurationProvider = null,
             LocalWebHostTimeouts? timeouts = null,
+            IHttpsCertificateProvider? httpsCertificates = null,
             Func<AuthorizationCoordinator, IAuthorizationService>?
                 authorizationServiceFactory = null)
         {
@@ -1148,6 +1290,7 @@ public sealed class LocalWebHostTests
                 pairingDuration,
                 pairingDurationProvider,
                 timeouts,
+                httpsCertificates,
                 authorizationServiceFactory);
             await fixture.Host.StartAsync();
             return fixture;
@@ -1160,6 +1303,7 @@ public sealed class LocalWebHostTests
             AuthorizationDuration pairingDuration = AuthorizationDuration.FiveHours,
             Func<AuthorizationDuration>? pairingDurationProvider = null,
             LocalWebHostTimeouts? timeouts = null,
+            IHttpsCertificateProvider? httpsCertificates = null,
             Func<AuthorizationCoordinator, IAuthorizationService>?
                 authorizationServiceFactory = null)
         {
@@ -1188,7 +1332,9 @@ public sealed class LocalWebHostTests
                 loggerFactory,
                 responseWriter,
                 timeouts,
-                incoming);
+                incoming,
+                httpsCertificates,
+                coordinator);
             return new HostFixture(host, coordinator, pairingCodes, history, incoming, clock, pairingDuration);
         }
 
@@ -1311,6 +1457,67 @@ public sealed class LocalWebHostTests
                 DateTimeOffset.UtcNow);
             Items.Add(item);
             return ValueTask.FromResult(item);
+        }
+    }
+
+    private sealed class RecordingHttpsCertificateProvider : IHttpsCertificateProvider
+    {
+        public List<IPAddress> RequestedAddresses { get; } = [];
+
+        public HttpsCertificateIdentityStatus Status { get; set; } =
+            HttpsCertificateIdentityStatus.Reused;
+
+        public HttpsCertificateIdentity? CurrentIdentity { get; private set; }
+
+        public Task<HttpsCertificateLease> GetOrCreateAsync(
+            IPAddress address,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RequestedAddresses.Add(address);
+            var certificate = CreateCertificate(address);
+            var fingerprint = Convert.ToHexString(
+                certificate.GetCertHash(HashAlgorithmName.SHA256));
+            CurrentIdentity = new HttpsCertificateIdentity(
+                address,
+                fingerprint,
+                $"{fingerprint[..4]}-{fingerprint.Substring(4, 4)}-{fingerprint.Substring(8, 4)}",
+                certificate.NotAfter.ToUniversalTime(),
+                Status);
+            return Task.FromResult(new HttpsCertificateLease(CurrentIdentity, certificate));
+        }
+
+        public Task ResetAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CurrentIdentity = null;
+            return Task.CompletedTask;
+        }
+
+        public Task AcknowledgeAuthorizationResetAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        private static X509Certificate2 CreateCertificate(IPAddress address)
+        {
+            using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var request = new CertificateRequest(
+                "CN=Test",
+                key,
+                HashAlgorithmName.SHA256);
+            var san = new SubjectAlternativeNameBuilder();
+            san.AddIpAddress(address);
+            san.AddDnsName("localhost");
+            request.CertificateExtensions.Add(san.Build());
+            using var certificate = request.CreateSelfSigned(
+                DateTimeOffset.UtcNow.AddMinutes(-5),
+                DateTimeOffset.UtcNow.AddDays(1));
+            return X509CertificateLoader.LoadPkcs12(
+                certificate.Export(X509ContentType.Pkcs12),
+                password: null);
         }
     }
 

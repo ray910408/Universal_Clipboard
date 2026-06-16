@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using UniversalClipboard.App.Security;
 using UniversalClipboard.Core.Authorization;
 using UniversalClipboard.Core.Clipboard;
 
@@ -38,6 +39,12 @@ public sealed record LocalWebHostStopResult(bool CompletedOrderly)
     public static LocalWebHostStopResult Orderly { get; } = new(true);
 
     public static LocalWebHostStopResult Incomplete { get; } = new(false);
+}
+
+internal sealed class LocalWebHostAuthorizationResetException(AuthorizationFailure failure)
+    : InvalidOperationException($"HTTPS identity rotation could not revoke authorizations: {failure}")
+{
+    public AuthorizationFailure Failure { get; } = failure;
 }
 
 internal interface ILocalWebHostInstance : IAsyncDisposable
@@ -73,6 +80,8 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
     private readonly ILogger _logger;
     private readonly IClipResponseWriter _responseWriter;
     private readonly IIncomingTextSink _incomingTextSink;
+    private readonly IHttpsCertificateProvider _httpsCertificates;
+    private readonly IAuthorizationAdministration? _authorizationAdministration;
     private readonly StrictUtf8TextValidator _textValidator = new();
     private readonly LocalWebHostTimeouts _timeouts;
     private readonly RequestRateLimiter _pairRateLimiter;
@@ -96,7 +105,9 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         ILoggerFactory? loggerFactory = null,
         IClipResponseWriter? responseWriter = null,
         LocalWebHostTimeouts? timeouts = null,
-        IIncomingTextSink? incomingTextSink = null)
+        IIncomingTextSink? incomingTextSink = null,
+        IHttpsCertificateProvider? httpsCertificates = null,
+        IAuthorizationAdministration? authorizationAdministration = null)
         : this(
             endpoint,
             authorization,
@@ -106,7 +117,9 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
             loggerFactory,
             responseWriter,
             timeouts,
-            incomingTextSink)
+            incomingTextSink,
+            httpsCertificates,
+            authorizationAdministration)
     {
     }
 
@@ -119,7 +132,9 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         ILoggerFactory? loggerFactory = null,
         IClipResponseWriter? responseWriter = null,
         LocalWebHostTimeouts? timeouts = null,
-        IIncomingTextSink? incomingTextSink = null)
+        IIncomingTextSink? incomingTextSink = null,
+        IHttpsCertificateProvider? httpsCertificates = null,
+        IAuthorizationAdministration? authorizationAdministration = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
         ArgumentNullException.ThrowIfNull(authorization);
@@ -141,6 +156,8 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
         _logger = _loggerFactory.CreateLogger<LocalWebHost>();
         _responseWriter = responseWriter ?? new JsonClipResponseWriter();
         _incomingTextSink = incomingTextSink ?? NullIncomingTextSink.Instance;
+        _httpsCertificates = httpsCertificates ?? new EphemeralHttpsCertificateProvider();
+        _authorizationAdministration = authorizationAdministration ?? authorization as IAuthorizationAdministration;
         _timeouts = timeouts ?? LocalWebHostTimeouts.Production;
         _pairRateLimiter = RequestRateLimiter.CreatePairing(_timeProvider);
         _clipRateLimiter = RequestRateLimiter.CreateClips(_timeProvider);
@@ -162,7 +179,20 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
             });
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton(_loggerFactory);
-        var httpsCertificate = CreateHttpsCertificate(_endpoint.Address);
+        var httpsLease = await _httpsCertificates.GetOrCreateAsync(
+            _endpoint.Address,
+            cancellationToken);
+        var httpsCertificate = httpsLease.Certificate;
+        try
+        {
+            await RevokeAuthorizationsForNewHttpsIdentityAsync(httpsLease.Identity, cancellationToken);
+        }
+        catch
+        {
+            httpsCertificate.Dispose();
+            throw;
+        }
+
         builder.WebHost.ConfigureKestrel(options =>
         {
             options.Listen(_endpoint, listen => listen.UseHttps(httpsCertificate));
@@ -772,6 +802,42 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
     private bool HasExpectedHost(HttpRequest request) =>
         IsExpectedHost(request.Host, _endpoint);
 
+    private async Task RevokeAuthorizationsForNewHttpsIdentityAsync(
+        HttpsCertificateIdentity identity,
+        CancellationToken cancellationToken)
+    {
+        if (identity.Status == HttpsCertificateIdentityStatus.Reused)
+        {
+            return;
+        }
+
+        if (_authorizationAdministration is null)
+        {
+            throw new LocalWebHostAuthorizationResetException(
+                AuthorizationFailure.PersistenceFailed);
+        }
+
+        if (_authorizationAdministration.List().Length == 0)
+        {
+            await _httpsCertificates
+                .AcknowledgeAuthorizationResetAsync(cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        var revoke = await _authorizationAdministration
+            .RevokeAllAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!revoke.Succeeded)
+        {
+            throw new LocalWebHostAuthorizationResetException(revoke.Failure);
+        }
+
+        await _httpsCertificates
+            .AcknowledgeAuthorizationResetAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     internal static bool IsExpectedHost(HostString host, IPEndPoint endpoint) =>
         string.Equals(
             host.Value,
@@ -1191,6 +1257,42 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
                 request.Authorization.BrowserName,
                 request.Text,
                 TimeProvider.System.GetUtcNow()));
+    }
+
+    private sealed class EphemeralHttpsCertificateProvider : IHttpsCertificateProvider
+    {
+        public HttpsCertificateIdentity? CurrentIdentity { get; private set; }
+
+        public Task<HttpsCertificateLease> GetOrCreateAsync(
+            IPAddress address,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var certificate = CreateHttpsCertificate(address);
+            var fingerprint = Convert.ToHexString(
+                certificate.GetCertHash(HashAlgorithmName.SHA256));
+            CurrentIdentity = new HttpsCertificateIdentity(
+                address,
+                fingerprint,
+                $"{fingerprint[..4]}-{fingerprint.Substring(4, 4)}-{fingerprint.Substring(8, 4)}",
+                certificate.NotAfter.ToUniversalTime(),
+                HttpsCertificateIdentityStatus.Created);
+            return Task.FromResult(new HttpsCertificateLease(CurrentIdentity, certificate));
+        }
+
+        public Task ResetAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CurrentIdentity = null;
+            return Task.CompletedTask;
+        }
+
+        public Task AcknowledgeAuthorizationResetAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class RequestBodyTooLargeException : Exception;

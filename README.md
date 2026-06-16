@@ -52,12 +52,21 @@ To remove the firewall rule later, run:
 - TCP port `43127` reachable from the iPhone.
 - For source builds, .NET 10 SDK.
 
-The app currently serves an ephemeral self-signed HTTPS endpoint on the selected
-LAN address, for example `https://192.168.1.5:43127/`. This encrypts the local
-transport and helps against passive LAN sniffing, but it is **not** a complete
-trust model: there is no private CA, certificate pinning, or first-use
-fingerprint verification. Safari may show a certificate warning. Do not use it
-on public, guest, hotel, school, or untrusted networks.
+The app serves a self-signed HTTPS endpoint on the selected LAN address, for
+example `https://192.168.1.5:43127/`. The HTTPS identity is persisted under the
+current Windows user profile and protected with Windows DPAPI, so restarting the
+app reuses the same certificate for the same selected IPv4 address. The tray shows
+the certificate short code and fingerprint, and **Reset HTTPS** deliberately
+generates a new identity and revokes pairings.
+If the stored identity is missing while pairings exist, corrupt, expired, or bound
+to the wrong selected IPv4 address, the app revokes existing pairings before it
+serves the replacement certificate.
+
+This encrypts the local transport and helps against passive LAN sniffing, but it
+is **not** a complete trust model: there is no private CA or automatic browser
+certificate pinning. The first time Safari accepts the self-signed certificate can
+still be attacked by an active same-network attacker. Do not use it on public,
+guest, hotel, school, or untrusted networks.
 
 ## Architecture
 
@@ -73,6 +82,12 @@ flowchart LR
     H --> I["Pending incoming text<br/>Windows tray approval"]
     I -->|Apply to Windows Clipboard| A
 ```
+
+More project documentation:
+
+- [Design and security model](docs/design.md)
+- [Firewall setup](docs/firewall-setup.md)
+- [Release smoke checklist](docs/release-smoke.md)
 
 ## Build From Source
 
@@ -143,15 +158,20 @@ Clipboard text stays in process memory only. Restarting the Windows app clears
 shared, pending, and incoming clipboard content. Authorization metadata is stored under
 `%LOCALAPPDATA%\UniversalClipboard\authorizations.v1.bin` and protected with Windows
 DPAPI for the current user. The file stores token and session-proof digests, not
-plaintext session tokens, session proofs, pairing codes, or clipboard text.
+plaintext session tokens, session proofs, pairing codes, or clipboard text. The
+local HTTPS identity is stored separately under
+`%LOCALAPPDATA%\UniversalClipboard\https-certificates.v1.bin` and is also protected
+with Windows DPAPI for the current user.
 
 Important limits:
 
-- The MVP currently uses an ephemeral self-signed HTTPS certificate. This reduces
-  passive LAN sniffing, but it is not a full trust model: there is no private CA,
-  certificate pinning, or first-use fingerprint verification.
+- The MVP uses a persisted self-signed HTTPS certificate per selected IPv4 address.
+  This reduces repeated Safari warnings and gives the Windows tray a stable
+  fingerprint to display, but it is not a full trust model: there is no private CA
+  or automatic browser certificate pinning.
 - An active same-network attacker may still attack the first certificate acceptance
-  flow. Use the app only on trusted Private networks.
+  flow. Use the app only on trusted Private networks. If the tray identity changes
+  unexpectedly, reset HTTPS and pair again only on a network you trust.
 - Authorization requires both the host-scoped HttpOnly `clip_session` cookie and an
   independent `X-Clip-Session` proof stored in Safari `sessionStorage`. The cookie
   uses `HttpOnly`, `Secure`, `SameSite=Strict`, and `Path=/clip-api`.
@@ -173,6 +193,10 @@ Important limits:
   LocalSubnet rule documented in [docs/firewall-setup.md](docs/firewall-setup.md).
 - **Port conflict**: another process is listening on TCP `43127`; stop it before
   starting sharing.
+- **Safari shows a new certificate warning after it previously worked**: confirm the
+  tray HTTPS identity did not change unexpectedly. A new selected IP, expired or
+  corrupt local identity, or **Reset HTTPS** creates a new certificate, revokes
+  existing pairings, and requires pairing again.
 - **Expired or reused QR**: generate a new pairing code. Codes are single-use and
   expire after two minutes.
 - **Copy button does not confirm Copied**: use the visible selected text and

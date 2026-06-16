@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using FluentAssertions;
 using UniversalClipboard.App.Network;
+using UniversalClipboard.App.Web;
 using UniversalClipboard.Core.Authorization;
 
 namespace UniversalClipboard.App.Tests.Network;
@@ -225,6 +226,20 @@ public sealed class NetworkCoordinatorTests
         state.Status.Should().Be(NetworkSharingStatus.PortConflict);
         state.PortDiagnostic.Should().Contain("address already in use");
         fixture.Coordinator.CurrentState.Status.Should().Be(NetworkSharingStatus.PortConflict);
+        fixture.Host.Starts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Host_authorization_reset_failure_reports_persistence_failed()
+    {
+        var fixture = new Fixture();
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5")];
+        fixture.Host.StartException = new LocalWebHostAuthorizationResetException(
+            AuthorizationFailure.PersistenceFailed);
+
+        var state = await fixture.Coordinator.StartAsync();
+
+        state.Status.Should().Be(NetworkSharingStatus.AuthorizationPersistenceFailed);
         fixture.Host.Starts.Should().BeEmpty();
     }
 
