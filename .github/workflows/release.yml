@@ -1,0 +1,85 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore UniversalClipboard.slnx -r win-x64 --locked-mode
+
+      - name: Restore publish runtime
+        run: dotnet restore src/UniversalClipboard.App/UniversalClipboard.App.csproj -r win-x64 --locked-mode
+
+      - name: Build
+        run: dotnet build UniversalClipboard.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test UniversalClipboard.slnx -c Release --no-build --no-restore
+
+      - name: Publish win-x64
+        run: dotnet publish src/UniversalClipboard.App/UniversalClipboard.App.csproj -c Release -r win-x64 --self-contained true -o artifacts/win-x64 /p:NuGetAudit=false
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          Get-FileHash artifacts/win-x64/UniversalClipboard.exe, artifacts/win-x64/UniversalClipboard.dll -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  $([System.IO.Path]::GetFileName($_.Path))" } |
+            Set-Content -Path artifacts/win-x64/UniversalClipboard-win-x64.sha256 -Encoding ASCII
+
+          Copy-Item artifacts/win-x64/UniversalClipboard-win-x64.sha256 artifacts/UniversalClipboard-win-x64.sha256
+          Compress-Archive -Path artifacts/win-x64/* -DestinationPath artifacts/UniversalClipboard-win-x64.zip -Force
+
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path 'artifacts/UniversalClipboard-win-x64.zip'))
+          try {
+            $entries = $zip.Entries | ForEach-Object { $_.FullName }
+            foreach ($required in @(
+              'UniversalClipboard.exe',
+              'UniversalClipboard.dll',
+              'UniversalClipboard-win-x64.sha256',
+              'hostfxr.dll',
+              'hostpolicy.dll',
+              'coreclr.dll'
+            )) {
+              if ($entries -notcontains $required) {
+                throw "Release zip is missing required entry: $required"
+              }
+            }
+          } finally {
+            $zip.Dispose()
+          }
+
+      - name: Upload release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $assets = @(
+            'artifacts/UniversalClipboard-win-x64.zip',
+            'artifacts/UniversalClipboard-win-x64.sha256'
+          )
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --clobber
+          } else {
+            gh release create $tag @assets `
+              --title "Universal Clipboard $tag" `
+              --notes "Portable Windows x64 build. Download UniversalClipboard-win-x64.zip, extract it, run UniversalClipboard.exe, then scan the tray QR code."
+          }
