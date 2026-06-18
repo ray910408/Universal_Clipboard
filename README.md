@@ -1,16 +1,16 @@
 # Universal Clipboard
 
-Universal Clipboard is a personal Windows-to-iPhone text bridge. Copy plain text on
-Windows, open the paired local page on iPhone Safari, tap **Copy to iPhone**, then
-paste in another iPhone app. Write-enabled pairings can also send text from iPhone
-Safari back to Windows, where it stays pending until you click **Apply to Windows
-Clipboard** in the tray.
+Universal Clipboard is a personal Windows-to-mobile text bridge for iPhone Safari
+and Android Chrome. Copy plain text on Windows, open the paired local page on the
+phone, tap the copy button, then paste in another mobile app. Write-enabled
+pairings can also send text from iPhone Safari or Android Chrome back to Windows,
+where it stays pending until you click **Apply to Windows Clipboard** in the tray.
 
 This MVP is intentionally local-first:
 
 - no account;
 - no cloud relay;
-- no iPhone app;
+- no mobile app;
 - no clipboard payloads written by the app to disk;
 - latest three approved text items only.
 
@@ -29,8 +29,8 @@ and installs a repository-local SDK under `.dotnet\` only when one is missing. I
 then restores packages, builds the solution, and starts the Windows tray app. To
 prepare prerequisites without starting the tray app, run `.\scripts\bootstrap.ps1`.
 Windows management stays in the **Tray UI**. Use the tray window to choose the LAN
-interface, generate a QR code, and view the iPhone URL. iPhone Safari uses the tray
-URL, for example `https://<LAN-IP>:43127/`.
+interface, generate a QR code, and view the phone URL. iPhone Safari or Android
+Chrome uses the tray URL, for example `https://<LAN-IP>:43127/`.
 
 Firewall changes are opt-in. To create the documented Private + LocalSubnet inbound
 rule for TCP `43127`, run from **Administrator PowerShell**:
@@ -48,8 +48,8 @@ To remove the firewall rule later, run:
 ## Requirements
 
 - Windows PC on a trusted **Private** Ethernet or Wi-Fi network.
-- iPhone Safari on the same LAN.
-- TCP port `43127` reachable from the iPhone.
+- iPhone Safari or Android Chrome on the same LAN.
+- TCP port `43127` reachable from the phone.
 - For source builds, .NET 10 SDK.
 
 The app serves a self-signed HTTPS endpoint on the selected LAN address, for
@@ -64,9 +64,9 @@ serves the replacement certificate.
 
 This encrypts the local transport and helps against passive LAN sniffing, but it
 is **not** a complete trust model: there is no private CA or automatic browser
-certificate pinning. The first time Safari accepts the self-signed certificate can
-still be attacked by an active same-network attacker. Do not use it on public,
-guest, hotel, school, or untrusted networks.
+certificate pinning. The first time a mobile browser accepts the self-signed
+certificate can still be attacked by an active same-network attacker. Do not use
+it on public, guest, hotel, school, or untrusted networks.
 
 ## Architecture
 
@@ -74,8 +74,8 @@ guest, hotel, school, or untrusted networks.
 flowchart LR
     A["Windows clipboard"] --> B["UniversalClipboard.App tray process"]
     B --> C["Local Kestrel HTTPS<br/>self-signed cert on :43127"]
-    C --> D["iPhone Safari page<br/>paired same-LAN browser"]
-    D --> E{"Copy to iPhone"}
+    C --> D["iPhone Safari / Android Chrome page<br/>paired same-LAN browser"]
+    D --> E{"Copy to phone"}
     E -->|Preferred when available| F["Clipboard API copy"]
     E -->|Reliable fallback| G["Manual textarea selection<br/>long-press Copy"]
     D -->|Write permission only| H["POST /clip-api/incoming-text"]
@@ -116,19 +116,19 @@ MVP; verify the source and checksums before running builds you did not create.
 2. Add the firewall rule from [docs/firewall-setup.md](docs/firewall-setup.md).
 3. Launch `UniversalClipboard.App.exe`.
 4. If multiple eligible LAN interfaces are shown, choose the one on the same network
-   as the iPhone.
+   as the phone.
 5. Choose a pairing duration. The default is **5 hours**.
 6. Choose pairing permission. The default is **Read only**. Select **Read + Write**
-   before generating the QR code if the iPhone should both read Windows clips and
+   before generating the QR code if the phone should both read Windows clips and
    send text back. Select **Write only** only when the phone should submit text but
    not read the Windows feed.
 7. Generate a pairing QR code in the tray window.
-8. Open or scan the pairing URL on iPhone Safari.
+8. Open or scan the pairing URL on iPhone Safari or Android Chrome.
 9. Copy text on Windows. Sensitive-looking text is held for approval in the tray.
-10. On iPhone, tap **Copy to iPhone**. If Safari does not allow one-tap
-   clipboard copy, use the selected textarea and long-press **Copy**.
-11. For Write-enabled pairings, use **Send to Windows** on iPhone, then approve the
-    pending incoming item from the Windows tray.
+10. On the phone, tap **Copy to iPhone**. If the browser does not allow one-tap
+    clipboard copy, use the selected textarea and long-press **Copy**.
+11. For Write-enabled pairings, use **Send to Windows** on the phone, then approve
+    the pending incoming item from the Windows tray.
 
 ## Pairing Durations
 
@@ -137,7 +137,8 @@ MVP; verify the source and checksums before running builds you did not create.
 - **1 day**: useful for one-day setup or travel.
 - **1 week**: longer trusted-device convenience.
 - **Permanent**: server-side authorization does not expire until revoked. This is
-  high risk; revoke it when no longer needed. Safari may still delete its cookie.
+  high risk; revoke it when no longer needed. The mobile browser may still delete
+  its cookie or site storage.
 
 Every paired browser authorization can read the latest three shared items while it
 is valid unless it was paired as **Write only**. New pairings default to **Read
@@ -145,12 +146,13 @@ only**. Revoke one browser or revoke all from the tray window.
 
 ## Pairing Permissions
 
-- **Read only**: iPhone Safari can fetch the Windows feed and use **Copy to iPhone**.
-  This is the default.
-- **Write only**: iPhone Safari can use **Send to Windows**, but it cannot read the
-  Windows feed.
-- **Read + Write**: iPhone Safari can use both directions. Incoming text still waits
-  in the tray until you approve it with **Apply to Windows Clipboard**.
+- **Read only**: iPhone Safari or Android Chrome can fetch the Windows feed and use
+  **Copy to iPhone**. This is the default.
+- **Write only**: iPhone Safari or Android Chrome can use **Send to Windows**, but
+  it cannot read the Windows feed.
+- **Read + Write**: iPhone Safari or Android Chrome can use both directions.
+  Incoming text still waits in the tray until you approve it with **Apply to Windows
+  Clipboard**.
 
 ## Privacy And Security Limits
 
@@ -166,16 +168,18 @@ with Windows DPAPI for the current user.
 Important limits:
 
 - The MVP uses a persisted self-signed HTTPS certificate per selected IPv4 address.
-  This reduces repeated Safari warnings and gives the Windows tray a stable
+  This reduces repeated mobile browser warnings and gives the Windows tray a stable
   fingerprint to display, but it is not a full trust model: there is no private CA
   or automatic browser certificate pinning.
 - An active same-network attacker may still attack the first certificate acceptance
   flow. Use the app only on trusted Private networks. If the tray identity changes
   unexpectedly, reset HTTPS and pair again only on a network you trust.
 - Authorization requires both the host-scoped HttpOnly `clip_session` cookie and an
-  independent `X-Clip-Session` proof stored in Safari `sessionStorage`. The cookie
-  uses `HttpOnly`, `Secure`, `SameSite=Strict`, and `Path=/clip-api`.
-- Incoming iPhone-to-Windows text requires a Write-enabled pairing and is never
+  independent `X-Clip-Session` proof stored in same-origin browser storage. The web
+  page prefers `localStorage` so mobile browser tab reloads keep working, and falls
+  back to `sessionStorage` when persistent storage is unavailable. The cookie uses
+  `HttpOnly`, `Secure`, `SameSite=Strict`, and `Path=/clip-api`.
+- Incoming phone-to-Windows text requires a Write-enabled pairing and is never
   applied automatically. Revoke, revoke all, expiry cleanup, and app exit clear the
   relevant incoming queue.
 - Sensitive detection is a guardrail, not data loss prevention. It covers PEM
@@ -187,23 +191,23 @@ Important limits:
 ## Troubleshooting
 
 - **Tray says Public network**: switch the Windows network profile to Private.
-- **iPhone cannot load the URL**: check same Wi-Fi, guest/client isolation, VPN, and
+- **Phone cannot load the URL**: check same Wi-Fi, guest/client isolation, VPN, and
   Windows Firewall.
 - **Firewall shows Unknown**: the tray only recognizes the exact Private +
   LocalSubnet rule documented in [docs/firewall-setup.md](docs/firewall-setup.md).
 - **Port conflict**: another process is listening on TCP `43127`; stop it before
   starting sharing.
-- **Safari shows a new certificate warning after it previously worked**: confirm the
-  tray HTTPS identity did not change unexpectedly. A new selected IP, expired or
-  corrupt local identity, or **Reset HTTPS** creates a new certificate, revokes
-  existing pairings, and requires pairing again.
+- **The mobile browser shows a new certificate warning after it previously worked**:
+  confirm the tray HTTPS identity did not change unexpectedly. A new selected IP,
+  expired or corrupt local identity, or **Reset HTTPS** creates a new certificate,
+  revokes existing pairings, and requires pairing again.
 - **Expired or reused QR**: generate a new pairing code. Codes are single-use and
   expire after two minutes.
 - **Copy button does not confirm Copied**: use the visible selected text and
-  long-press Copy. Manual copy is the reliable Safari fallback when one-tap
+  long-press Copy. Manual copy is the reliable browser fallback when one-tap
   Clipboard API access is unavailable.
 - **Send to Windows is disabled**: generate a new QR code with **Read + Write** or
-  **Write only** selected, then pair Safari again.
+  **Write only** selected, then pair the mobile browser again.
   
 ## Star History
 

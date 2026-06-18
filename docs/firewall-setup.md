@@ -54,19 +54,19 @@ Equivalent manual command:
 Remove-NetFirewallRule -DisplayName "Universal Clipboard LAN"
 ```
 
-## If iPhone Still Cannot Connect
+## If Phone Still Cannot Connect
 
-- Confirm Windows and iPhone are on the same private Wi-Fi or Ethernet LAN.
+- Confirm Windows and the phone are on the same private Wi-Fi or Ethernet LAN.
 - Disable VPN temporarily on either device.
 - Avoid guest Wi-Fi or client isolation.
-- Make sure the tray-selected adapter matches the iPhone network.
+- Make sure the tray-selected adapter matches the phone network.
 - Confirm no other process is using TCP `43127`.
-- Try opening the tray URL directly in Safari, for example
-  `https://192.168.1.5:43127/`. Safari may show a certificate warning because
+- Try opening the tray URL directly in iPhone Safari or Android Chrome, for example
+  `https://192.168.1.5:43127/`. The browser may show a certificate warning because
   the MVP uses a self-signed HTTPS certificate. The tray shows the current HTTPS
-  identity short code and fingerprint; if Safari reports a changed certificate
+  identity short code and fingerprint; if the browser reports a changed certificate
   unexpectedly, stop and verify the tray identity before pairing again.
 
 The tray's local port-listening check only proves the Windows app is listening. It
-does not prove the iPhone can reach the PC through Wi-Fi isolation or firewall
+does not prove the phone can reach the PC through Wi-Fi isolation or firewall
 policy.

@@ -28,7 +28,7 @@ Expected result:
 ## Runtime Smoke Checks
 
 Launch the published binary on a trusted Private LAN. Windows management remains in
-the Tray UI. iPhone Safari uses the tray-reported LAN URL, for example
+the Tray UI. iPhone Safari or Android Chrome uses the tray-reported LAN URL, for example
 `https://<LAN-IP>:43127/`.
 
 Because the MVP uses a persisted self-signed HTTPS certificate, command-line smoke
@@ -57,7 +57,7 @@ Expected result:
       long-running owner process;
 - [ ] tray **Exit** removes the TCP listener.
 
-## Manual iPhone Gates
+## Manual iPhone Safari Gates
 
 These gates require real device interaction and must stay unchecked until verified
 against the current release candidate:
@@ -77,3 +77,23 @@ against the current release candidate:
 - [ ] revoke the paired browser from the Tray UI and verify access stops;
 - [ ] after revoke or expiry cleanup, verify any pending incoming item from that
       authorization is gone and stale Apply/Discard actions do nothing.
+
+## Manual Android Chrome Gates
+
+These gates verify that Android Chrome supports the same bidirectional workflow as
+iPhone Safari and that Chrome-specific user-agent detection is preserved:
+
+- [ ] pair from Android Chrome and verify the Tray UI shows **Chrome**, not
+      Safari, for the paired browser;
+- [ ] copy a harmless clipboard fixture from Windows and use **Copy to iPhone** in
+      Android Chrome;
+- [ ] verify **Send to Windows** is disabled for a Read-only Android Chrome pairing;
+- [ ] re-pair Android Chrome with **Write only** and verify the Windows feed is
+      unavailable while **Send to Windows** remains enabled;
+- [ ] re-pair Android Chrome with **Read + Write**, send harmless text from Chrome,
+      and verify the tray shows **Pending incoming text** until **Apply to Windows
+      Clipboard** is clicked;
+- [ ] pair Android Chrome with **Read + Write**, then while the authorization is
+      still valid, background the paired mobile browser long enough for the tab to
+      reload or be restored, then verify **Copy to iPhone** and **Send to Windows**
+      still work without re-pairing.

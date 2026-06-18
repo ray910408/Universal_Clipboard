@@ -569,6 +569,24 @@ public sealed class LocalWebHostTests
     }
 
     [Fact]
+    public async Task Incoming_text_rejects_stolen_cookie_without_session_proof_header()
+    {
+        await using var fixture = await HostFixture.StartAsync();
+        var session = await fixture.PairAsync("write");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/clip-api/incoming-text")
+        {
+            Content = JsonContent.Create(new { text = "from phone" }),
+        };
+        request.Headers.Add("Cookie", session.Cookie);
+
+        var response = await fixture.Client.SendAsync(request);
+
+        await AssertErrorAsync(response, HttpStatusCode.Unauthorized, "unauthorized");
+        response.Headers.GetValues("Set-Cookie").Single().Should().Contain("max-age=0");
+        fixture.Incoming.Items.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Incoming_text_unauthenticated_wrong_content_type_returns_401_before_validation()
     {
         await using var fixture = await HostFixture.StartAsync();
