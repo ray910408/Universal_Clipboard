@@ -42,7 +42,10 @@ if (-not (Test-IsAdministrator)) {
 
 Write-Step "Removing Windows Firewall rule: $DisplayName"
 
-$rules = Get-NetFirewallRule -DisplayName $DisplayName -ErrorAction SilentlyContinue
+$rules = @(
+    Get-NetFirewallRule -Name $DisplayName -ErrorAction SilentlyContinue
+    Get-NetFirewallRule -DisplayName $DisplayName -ErrorAction SilentlyContinue
+) | Sort-Object -Property Name -Unique
 if (-not $rules) {
     Write-Info "No firewall rule found: $DisplayName"
     exit 0

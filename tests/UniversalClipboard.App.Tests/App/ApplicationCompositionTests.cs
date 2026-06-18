@@ -195,6 +195,21 @@ public sealed class ApplicationCompositionTests
     }
 
     [Fact]
+    public async Task Tray_exit_requests_thread_exit_when_exit_cleanup_throws()
+    {
+        var exitObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fixture = new Fixture(
+            _ => throw new InvalidOperationException("exit cleanup failed"));
+        fixture.Context.ThreadExit += (_, _) => exitObserved.TrySetResult();
+
+        fixture.Window.RaiseExitRequested();
+
+        await exitObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        fixture.Notifications.Items.Should().Contain(notification =>
+            notification.Title == "Universal Clipboard exit cleanup failed");
+    }
+
+    [Fact]
     public void Https_identity_fingerprint_is_presented_in_tray_state()
     {
         var fixture = new Fixture();
@@ -347,6 +362,174 @@ public sealed class ApplicationCompositionTests
         Program.DisposeTrayWindow(new DisposableProbe(() => disposed.Add("tray:dispose")));
 
         disposed.Should().Equal("tray:dispose");
+    }
+
+    [Fact]
+    public void Program_cleanup_runs_firewall_removal_when_earlier_cleanup_throws()
+    {
+        var events = new List<string>();
+
+        var act = () => Program.RunCleanupThenFirewallRemoval(
+            () =>
+            {
+                events.Add("cleanup");
+                throw new InvalidOperationException("cleanup failed");
+            },
+            () => events.Add("firewall:remove"));
+
+        act.Should().Throw<InvalidOperationException>();
+        events.Should().Equal("cleanup", "firewall:remove");
+    }
+
+    [Fact]
+    public void Program_runtime_payload_check_reports_missing_dependency_files()
+    {
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory.FullName, "UniversalClipboard.Core.dll"), "");
+            var reports = new List<string>();
+
+            var verified = Program.VerifyRuntimePayload(
+                directory.FullName,
+                reports.Add,
+                ["UniversalClipboard.Core.dll", "QRCoder.dll"]);
+
+            verified.Should().BeFalse();
+            reports.Should().ContainSingle()
+                .Which.Should().Contain("QRCoder.dll");
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Program_runtime_payload_check_reads_dependency_manifest_assets()
+    {
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            File.WriteAllText(Path.Combine(directory.FullName, "UniversalClipboard.dll"), "");
+            File.WriteAllText(Path.Combine(directory.FullName, "UniversalClipboard.Core.dll"), "");
+            File.WriteAllText(Path.Combine(directory.FullName, "UniversalClipboard.deps.json"), """
+                {
+                  "targets": {
+                    ".NETCoreApp,Version=v10.0/win-x64": {
+                      "QRCoder/1.8.0": {
+                        "runtime": {
+                          "lib/net6.0/QRCoder.dll": {}
+                        }
+                      },
+                      "runtimepack.Microsoft.NETCore.App.Runtime.win-x64/10.0.9": {
+                        "native": {
+                          "hostpolicy.dll": {}
+                        }
+                      }
+                    }
+                  }
+                }
+                """);
+            File.WriteAllText(Path.Combine(directory.FullName, "UniversalClipboard.runtimeconfig.json"), "");
+            File.WriteAllText(Path.Combine(directory.FullName, "QRCoder.dll"), "");
+            var reports = new List<string>();
+
+            var verified = Program.VerifyRuntimePayload(directory.FullName, reports.Add);
+
+            verified.Should().BeFalse();
+            reports.Should().ContainSingle()
+                .Which.Should().Contain("hostpolicy.dll");
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Program_firewall_helper_checks_runtime_payload_before_firewall_changes()
+    {
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            var editor = new FirewallRuleEditorProbe();
+            var manager = new WindowsFirewallRuleManager(new FirewallRuleQueryProbe(), editor);
+            var reports = new List<string>();
+
+            var handled = Program.TryRunFirewallCommand(
+                ["--configure-firewall-rule"],
+                manager,
+                directory.FullName,
+                reports.Add,
+                out var exitCode);
+
+            handled.Should().BeTrue();
+            exitCode.Should().Be(1);
+            reports.Should().ContainSingle()
+                .Which.Should().Contain("UniversalClipboard.dll");
+            editor.AddedRules.Should().BeEmpty();
+            editor.RemovedRuleNames.Should().BeEmpty();
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Program_firewall_helper_configure_creates_expected_rule()
+    {
+        var editor = new FirewallRuleEditorProbe();
+        var manager = new WindowsFirewallRuleManager(new FirewallRuleQueryProbe(), editor);
+
+        var handled = Program.TryRunFirewallCommand(
+            ["--configure-firewall-rule"],
+            manager,
+            out var exitCode);
+
+        handled.Should().BeTrue();
+        exitCode.Should().Be(0);
+        editor.AddedRules.Should().ContainSingle().Which.Should().Be(ExpectedFirewallDefinition());
+        editor.RemovedRuleNames.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Program_firewall_helper_remove_deletes_expected_rule()
+    {
+        var editor = new FirewallRuleEditorProbe();
+        var manager = new WindowsFirewallRuleManager(
+            new FirewallRuleQueryProbe { Rules = [ExpectedFirewallSnapshot()] },
+            editor);
+
+        var handled = Program.TryRunFirewallCommand(
+            ["--remove-firewall-rule"],
+            manager,
+            out var exitCode);
+
+        handled.Should().BeTrue();
+        exitCode.Should().Be(0);
+        editor.RemovedRuleNames.Should().Equal(WindowsFirewallInspector.ExpectedRuleName);
+        editor.AddedRules.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Program_firewall_helper_returns_failure_for_firewall_management_errors()
+    {
+        var manager = new WindowsFirewallRuleManager(
+            new FirewallRuleQueryProbe
+            {
+                Error = new UnauthorizedAccessException("firewall unavailable"),
+            },
+            new FirewallRuleEditorProbe());
+
+        var handled = Program.TryRunFirewallCommand(
+            ["--configure-firewall-rule"],
+            manager,
+            out var exitCode);
+
+        handled.Should().BeTrue();
+        exitCode.Should().Be(1);
     }
 
     [Fact]
@@ -1131,7 +1314,7 @@ public sealed class ApplicationCompositionTests
 
         public ClipboardApplicationContext Context { get; }
 
-        public Fixture()
+        public Fixture(Func<CancellationToken, Task>? exitAsync = null)
         {
             Clipboard = new RecordingClipboardContentStore(Sharing.Events);
             Context = new ClipboardApplicationContext(
@@ -1145,13 +1328,15 @@ public sealed class ApplicationCompositionTests
                     IncomingClipboard,
                     Qr,
                     HttpsCertificates,
-                    Clock));
+                    Clock,
+                    ExitAsync: exitAsync));
         }
     }
 
     private sealed class RecordingTrayWindow : ITrayWindow, ITrayCommandSource
     {
         private EventHandler? _startSharingRequested;
+        private EventHandler? _exitRequested;
 
         public TrayViewState State { get; private set; } = TrayViewState.Empty;
 
@@ -1171,8 +1356,8 @@ public sealed class ApplicationCompositionTests
 
         public event EventHandler? ExitRequested
         {
-            add { }
-            remove { }
+            add => _exitRequested += value;
+            remove => _exitRequested -= value;
         }
 
         public event EventHandler? PairingCodeRequested
@@ -1253,6 +1438,9 @@ public sealed class ApplicationCompositionTests
 
         public void RaiseStartSharingRequested() =>
             _startSharingRequested?.Invoke(this, EventArgs.Empty);
+
+        public void RaiseExitRequested() =>
+            _exitRequested?.Invoke(this, EventArgs.Empty);
     }
 
     private sealed class RecordingTrayNotifier : ITrayNotifier
@@ -1565,6 +1753,56 @@ public sealed class ApplicationCompositionTests
     private sealed class DisposableProbe(Action onDispose) : IDisposable
     {
         public void Dispose() => onDispose();
+    }
+
+    private static FirewallRuleDefinition ExpectedFirewallDefinition() =>
+        new(
+            WindowsFirewallInspector.ExpectedRuleName,
+            WindowsFirewallInspector.ExpectedRuleName,
+            IsEnabled: true,
+            FirewallRuleAction.Allow,
+            FirewallRuleProtocol.Tcp,
+            LocalPort: 43127,
+            FirewallRuleProfile.Private,
+            FirewallRemoteAddressScope.LocalSubnet);
+
+    private static FirewallRuleSnapshot ExpectedFirewallSnapshot() =>
+        new(
+            WindowsFirewallInspector.ExpectedRuleName,
+            WindowsFirewallInspector.ExpectedRuleName,
+            IsEnabled: true,
+            FirewallRuleAction.Allow,
+            FirewallRuleProtocol.Tcp,
+            LocalPort: 43127,
+            FirewallRuleProfile.Private,
+            FirewallRemoteAddressScope.LocalSubnet);
+
+    private sealed class FirewallRuleQueryProbe : IFirewallRuleQuery
+    {
+        public IReadOnlyList<FirewallRuleSnapshot> Rules { get; init; } = [];
+
+        public Exception? Error { get; init; }
+
+        public IReadOnlyList<FirewallRuleSnapshot> GetRules()
+        {
+            if (Error is not null)
+            {
+                throw Error;
+            }
+
+            return Rules;
+        }
+    }
+
+    private sealed class FirewallRuleEditorProbe : IFirewallRuleEditor
+    {
+        public List<FirewallRuleDefinition> AddedRules { get; } = [];
+
+        public List<string> RemovedRuleNames { get; } = [];
+
+        public void AddRule(FirewallRuleDefinition definition) => AddedRules.Add(definition);
+
+        public void RemoveRule(string name) => RemovedRuleNames.Add(name);
     }
 
     private sealed class NonPumpingSynchronizationContext : SynchronizationContext

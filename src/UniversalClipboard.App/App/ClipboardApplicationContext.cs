@@ -858,7 +858,7 @@ public sealed class ClipboardApplicationContext :
 
         commands.StartSharingRequested += (_, _) => RunCommand(() => StartSharingAsync());
         commands.StopSharingRequested += (_, _) => RunCommand(() => StopSharingAsync());
-        commands.ExitRequested += (_, _) => RunCommand(HandleExitRequestedAsync);
+        commands.ExitRequested += (_, _) => RunExitCommand();
         commands.PairingCodeRequested += (_, _) => RunCommand(() =>
         {
             CreatePairingCode();
@@ -911,6 +911,11 @@ public sealed class ClipboardApplicationContext :
         _ = RunCommandAsync(command);
     }
 
+    private void RunExitCommand()
+    {
+        _ = RunExitCommandAsync();
+    }
+
     private async Task RunCommandAsync(Func<Task> command)
     {
         try
@@ -923,6 +928,22 @@ public sealed class ClipboardApplicationContext :
                 "Universal Clipboard command failed",
                 "The requested action could not be completed. Check status and try again.");
             RefreshView();
+        }
+    }
+
+    private async Task RunExitCommandAsync()
+    {
+        try
+        {
+            await HandleExitRequestedAsync();
+        }
+        catch (Exception)
+        {
+            NotifyAndShow(
+                "Universal Clipboard exit cleanup failed",
+                "Universal Clipboard is closing so Windows can finish cleanup.");
+            RefreshView();
+            ExitThread();
         }
     }
 

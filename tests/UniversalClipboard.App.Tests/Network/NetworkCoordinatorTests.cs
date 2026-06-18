@@ -267,6 +267,7 @@ public sealed class NetworkCoordinatorTests
             [
                 new FirewallRuleSnapshot(
                     WindowsFirewallInspector.ExpectedRuleName,
+                    WindowsFirewallInspector.ExpectedRuleName,
                     IsEnabled: true,
                     FirewallRuleAction.Allow,
                     FirewallRuleProtocol.Tcp,
@@ -274,6 +275,7 @@ public sealed class NetworkCoordinatorTests
                     FirewallRuleProfile.Private,
                     FirewallRemoteAddressScope.LocalSubnet),
                 new FirewallRuleSnapshot(
+                    "Similar disabled",
                     "Similar disabled",
                     IsEnabled: false,
                     FirewallRuleAction.Allow,
@@ -351,6 +353,7 @@ public sealed class NetworkCoordinatorTests
             [
                 new FirewallRuleSnapshot(
                     name,
+                    name,
                     isEnabled,
                     action,
                     protocol,
@@ -363,6 +366,237 @@ public sealed class NetworkCoordinatorTests
         var inspector = new WindowsFirewallInspector(rules);
 
         inspector.Inspect(43127).Status.Should().Be(FirewallRuleStatus.Unknown);
+    }
+
+    [Fact]
+    public void Firewall_rule_manager_creates_private_local_subnet_rule_when_missing()
+    {
+        var query = new FakeFirewallRuleQuery();
+        var editor = new FakeFirewallRuleEditor();
+        var manager = new WindowsFirewallRuleManager(query, editor);
+
+        manager.EnsureRule(43127);
+
+        editor.RemovedRuleNames.Should().BeEmpty();
+        editor.AddedRules.Should().ContainSingle().Which.Should().Be(ExpectedFirewallDefinition());
+    }
+
+    [Fact]
+    public void Firewall_rule_manager_reports_ready_only_for_single_exact_rule()
+    {
+        new WindowsFirewallRuleManager(
+                new FakeFirewallRuleQuery { Rules = [ExpectedFirewallSnapshot()] },
+                new FakeFirewallRuleEditor())
+            .IsRuleReady(43127)
+            .Should()
+            .BeTrue();
+
+        new WindowsFirewallRuleManager(
+                new FakeFirewallRuleQuery
+                {
+                    Rules = [ExpectedFirewallSnapshot() with { DisplayName = "wrong-display" }],
+                },
+                new FakeFirewallRuleEditor())
+            .IsRuleReady(43127)
+            .Should()
+            .BeFalse();
+
+        new WindowsFirewallRuleManager(
+                new FakeFirewallRuleQuery
+                {
+                    Rules = [ExpectedFirewallSnapshot() with { RemoteAddressScope = FirewallRemoteAddressScope.Any }],
+                },
+                new FakeFirewallRuleEditor())
+            .IsRuleReady(43127)
+            .Should()
+            .BeFalse();
+
+        new WindowsFirewallRuleManager(
+                new FakeFirewallRuleQuery
+                {
+                    Rules =
+                    [
+                        ExpectedFirewallSnapshot(),
+                        ExpectedFirewallSnapshot(),
+                    ],
+                },
+                new FakeFirewallRuleEditor())
+            .IsRuleReady(43127)
+            .Should()
+            .BeFalse();
+    }
+
+    [Fact]
+    public void Firewall_rule_manager_reuses_exact_rule_without_writes()
+    {
+        var query = new FakeFirewallRuleQuery
+        {
+            Rules = [ExpectedFirewallSnapshot()],
+        };
+        var editor = new FakeFirewallRuleEditor();
+        var manager = new WindowsFirewallRuleManager(query, editor);
+
+        manager.EnsureRule(43127);
+
+        editor.RemovedRuleNames.Should().BeEmpty();
+        editor.AddedRules.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Firewall_rule_manager_replaces_same_name_non_exact_rule()
+    {
+        var query = new FakeFirewallRuleQuery
+        {
+            Rules =
+            [
+                ExpectedFirewallSnapshot() with
+                {
+                    Profile = FirewallRuleProfile.Public,
+                },
+            ],
+        };
+        var editor = new FakeFirewallRuleEditor();
+        var manager = new WindowsFirewallRuleManager(query, editor);
+
+        manager.EnsureRule(43127);
+
+        editor.RemovedRuleNames.Should().Equal(WindowsFirewallInspector.ExpectedRuleName);
+        editor.AddedRules.Should().ContainSingle().Which.Should().Be(ExpectedFirewallDefinition());
+    }
+
+    [Fact]
+    public void Firewall_rule_manager_replaces_duplicate_same_name_rules_even_when_one_is_exact()
+    {
+        var query = new FakeFirewallRuleQuery
+        {
+            Rules =
+            [
+                ExpectedFirewallSnapshot(),
+                ExpectedFirewallSnapshot() with
+                {
+                    RemoteAddressScope = FirewallRemoteAddressScope.Any,
+                },
+            ],
+        };
+        var editor = new FakeFirewallRuleEditor();
+        var manager = new WindowsFirewallRuleManager(query, editor);
+
+        manager.EnsureRule(43127);
+
+        editor.RemovedRuleNames.Should().Equal(
+            WindowsFirewallInspector.ExpectedRuleName,
+            WindowsFirewallInspector.ExpectedRuleName);
+        editor.AddedRules.Should().ContainSingle().Which.Should().Be(ExpectedFirewallDefinition());
+    }
+
+    [Fact]
+    public void Firewall_rule_manager_remove_deletes_all_rules_with_expected_name()
+    {
+        var query = new FakeFirewallRuleQuery
+        {
+            Rules =
+            [
+                ExpectedFirewallSnapshot(),
+                ExpectedFirewallSnapshot() with { LocalPort = 43128 },
+                ExpectedFirewallSnapshot() with
+                {
+                    Name = "GeneratedInternalName",
+                    DisplayName = WindowsFirewallInspector.ExpectedRuleName,
+                },
+                new FirewallRuleSnapshot(
+                    "Other",
+                    "Other",
+                    IsEnabled: true,
+                    FirewallRuleAction.Allow,
+                    FirewallRuleProtocol.Tcp,
+                    LocalPort: 43127,
+                    FirewallRuleProfile.Private,
+                    FirewallRemoteAddressScope.LocalSubnet),
+            ],
+        };
+        var editor = new FakeFirewallRuleEditor();
+        var manager = new WindowsFirewallRuleManager(query, editor);
+
+        manager.RemoveRule();
+
+        editor.RemovedRuleNames.Should().Equal(
+            WindowsFirewallInspector.ExpectedRuleName,
+            WindowsFirewallInspector.ExpectedRuleName,
+            "GeneratedInternalName");
+        editor.AddedRules.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Firewall_rule_manager_replaces_single_com_rule_with_multiple_ports_with_one_remove()
+    {
+        var query = new WindowsFirewallComRuleQuery(
+            new FakeComFirewallRules(
+                [
+                    new ComFirewallRuleSnapshot(
+                        WindowsFirewallInspector.ExpectedRuleName,
+                        WindowsFirewallInspector.ExpectedRuleName,
+                        Enabled: true,
+                        Action: WindowsFirewallComRuleQuery.AllowAction,
+                        Protocol: WindowsFirewallComRuleQuery.TcpProtocol,
+                        LocalPorts: "43127,43128",
+                        Profiles: WindowsFirewallComRuleQuery.PrivateProfile,
+                        RemoteAddresses: "LocalSubnet"),
+                ]));
+        var editor = new FakeFirewallRuleEditor();
+        var manager = new WindowsFirewallRuleManager(query, editor);
+
+        manager.EnsureRule(43127);
+
+        editor.RemovedRuleNames.Should().Equal(WindowsFirewallInspector.ExpectedRuleName);
+        editor.AddedRules.Should().ContainSingle().Which.Should().Be(ExpectedFirewallDefinition());
+    }
+
+    [Fact]
+    public void Com_firewall_rule_editor_writes_private_local_subnet_rule_and_releases_com_objects()
+    {
+        var bridge = new FakeWindowsFirewallComBridge([]);
+        var editor = new WindowsFirewallComRuleEditor(bridge);
+
+        editor.AddRule(ExpectedFirewallDefinition());
+
+        var rule = bridge.AddedRules.Should().ContainSingle().Subject;
+        rule.Properties.Should().Contain(new KeyValuePair<string, object>(
+            "Name",
+            WindowsFirewallInspector.ExpectedRuleName));
+        rule.Properties.Should().Contain(new KeyValuePair<string, object>(
+            "DisplayName",
+            WindowsFirewallInspector.ExpectedRuleName));
+        rule.Properties.Should().Contain(new KeyValuePair<string, object>("Enabled", true));
+        rule.Properties.Should().Contain(new KeyValuePair<string, object>(
+            "Direction",
+            WindowsFirewallComRuleQuery.InboundDirection));
+        rule.Properties.Should().Contain(new KeyValuePair<string, object>(
+            "Action",
+            WindowsFirewallComRuleQuery.AllowAction));
+        rule.Properties.Should().Contain(new KeyValuePair<string, object>(
+            "Protocol",
+            WindowsFirewallComRuleQuery.TcpProtocol));
+        rule.Properties.Should().Contain(new KeyValuePair<string, object>("LocalPorts", "43127"));
+        rule.Properties.Should().Contain(new KeyValuePair<string, object>(
+            "Profiles",
+            WindowsFirewallComRuleQuery.PrivateProfile));
+        rule.Properties.Should().Contain(new KeyValuePair<string, object>("RemoteAddresses", "LocalSubnet"));
+        bridge.Released.Should().Equal(
+            rule,
+            bridge.RuleCollection,
+            bridge.Policy);
+    }
+
+    [Fact]
+    public void Com_firewall_rule_editor_removes_rule_by_expected_name_and_releases_com_objects()
+    {
+        var bridge = new FakeWindowsFirewallComBridge([]);
+        var editor = new WindowsFirewallComRuleEditor(bridge);
+
+        editor.RemoveRule(WindowsFirewallInspector.ExpectedRuleName);
+
+        bridge.RemovedRuleNames.Should().Equal(WindowsFirewallInspector.ExpectedRuleName);
+        bridge.Released.Should().Equal(bridge.RuleCollection, bridge.Policy);
     }
 
     [Fact]
@@ -414,6 +648,7 @@ public sealed class NetworkCoordinatorTests
                 [
                     new ComFirewallRuleSnapshot(
                         WindowsFirewallInspector.ExpectedRuleName,
+                        WindowsFirewallInspector.ExpectedRuleName,
                         Enabled: true,
                         Action: 1,
                         Protocol: 6,
@@ -425,6 +660,7 @@ public sealed class NetworkCoordinatorTests
         var rule = query.GetRules().Single();
 
         rule.Should().Be(new FirewallRuleSnapshot(
+            WindowsFirewallInspector.ExpectedRuleName,
             WindowsFirewallInspector.ExpectedRuleName,
             IsEnabled: true,
             FirewallRuleAction.Allow,
@@ -446,6 +682,7 @@ public sealed class NetworkCoordinatorTests
                     [
                         new ComFirewallRuleSnapshot(
                             WindowsFirewallInspector.ExpectedRuleName,
+                            WindowsFirewallInspector.ExpectedRuleName,
                             Enabled: true,
                             Action: 1,
                             Protocol: 6,
@@ -462,6 +699,7 @@ public sealed class NetworkCoordinatorTests
     {
         var goodRule = new FakeRawComFirewallRule(
             WindowsFirewallInspector.ExpectedRuleName,
+            WindowsFirewallInspector.ExpectedRuleName,
             Enabled: true,
             Action: 1,
             Protocol: 6,
@@ -469,6 +707,7 @@ public sealed class NetworkCoordinatorTests
             Profiles: WindowsFirewallComRuleQuery.PrivateProfile,
             RemoteAddresses: "LocalSubnet");
         var badRule = new FakeRawComFirewallRule(
+            "bad",
             "bad",
             Enabled: true,
             Action: 1,
@@ -588,6 +827,28 @@ public sealed class NetworkCoordinatorTests
             [IPAddress.Parse(address)],
             HasDefaultGateway: true);
 
+    private static FirewallRuleDefinition ExpectedFirewallDefinition() =>
+        new(
+            WindowsFirewallInspector.ExpectedRuleName,
+            WindowsFirewallInspector.ExpectedRuleName,
+            IsEnabled: true,
+            FirewallRuleAction.Allow,
+            FirewallRuleProtocol.Tcp,
+            LocalPort: 43127,
+            FirewallRuleProfile.Private,
+            FirewallRemoteAddressScope.LocalSubnet);
+
+    private static FirewallRuleSnapshot ExpectedFirewallSnapshot() =>
+        new(
+            WindowsFirewallInspector.ExpectedRuleName,
+            WindowsFirewallInspector.ExpectedRuleName,
+            IsEnabled: true,
+            FirewallRuleAction.Allow,
+            FirewallRuleProtocol.Tcp,
+            LocalPort: 43127,
+            FirewallRuleProfile.Private,
+            FirewallRemoteAddressScope.LocalSubnet);
+
     private sealed class Fixture
     {
         public ConcurrentQueue<string> Events { get; } = new();
@@ -693,6 +954,17 @@ public sealed class NetworkCoordinatorTests
         public IReadOnlyList<FirewallRuleSnapshot> GetRules() => Rules;
     }
 
+    private sealed class FakeFirewallRuleEditor : IFirewallRuleEditor
+    {
+        public List<FirewallRuleDefinition> AddedRules { get; } = [];
+
+        public List<string> RemovedRuleNames { get; } = [];
+
+        public void AddRule(FirewallRuleDefinition definition) => AddedRules.Add(definition);
+
+        public void RemoveRule(string name) => RemovedRuleNames.Add(name);
+    }
+
     private sealed class ThrowingFirewallRuleQuery(Exception exception) : IFirewallRuleQuery
     {
         public IReadOnlyList<FirewallRuleSnapshot> GetRules() => throw exception;
@@ -756,7 +1028,13 @@ public sealed class NetworkCoordinatorTests
 
         public List<object> Released { get; } = [];
 
+        public List<FakeCreatedFirewallRule> AddedRules { get; } = [];
+
+        public List<string> RemovedRuleNames { get; } = [];
+
         public object? CreatePolicy() => Policy;
+
+        public object? CreateRule() => new FakeCreatedFirewallRule();
 
         public object? GetRules(object policy) => RuleCollection;
 
@@ -771,6 +1049,7 @@ public sealed class NetworkCoordinatorTests
             return name switch
             {
                 "Name" => rule.Name,
+                "DisplayName" => rule.DisplayName,
                 "Enabled" => rule.Enabled,
                 "Action" => rule.Action,
                 "Protocol" => rule.Protocol,
@@ -780,6 +1059,14 @@ public sealed class NetworkCoordinatorTests
                 _ => throw new ArgumentException("unknown property", nameof(name)),
             };
         }
+
+        public void SetProperty(object target, string name, object value) =>
+            ((FakeCreatedFirewallRule)target).Properties[name] = value;
+
+        public void AddRule(object rules, object rule) =>
+            AddedRules.Add((FakeCreatedFirewallRule)rule);
+
+        public void RemoveRule(object rules, string name) => RemovedRuleNames.Add(name);
 
         public bool IsComObject(object target) => true;
 
@@ -794,6 +1081,7 @@ public sealed class NetworkCoordinatorTests
 
     private sealed record FakeRawComFirewallRule(
         string Name,
+        string DisplayName,
         bool Enabled,
         int Action,
         int Protocol,
@@ -802,6 +1090,11 @@ public sealed class NetworkCoordinatorTests
         string RemoteAddresses)
     {
         public bool ThrowOnPropertyRead { get; init; }
+    }
+
+    private sealed class FakeCreatedFirewallRule
+    {
+        public Dictionary<string, object> Properties { get; } = [];
     }
 
     private sealed class FakeComNetworkList(
