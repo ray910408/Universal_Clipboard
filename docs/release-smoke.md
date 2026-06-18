@@ -13,7 +13,9 @@ Run from a Windows clone of the repository:
 .\.dotnet\dotnet.exe build UniversalClipboard.slnx -c Release --no-restore /p:NuGetAudit=false
 .\.dotnet\dotnet.exe test UniversalClipboard.slnx -c Release --no-build /p:NuGetAudit=false
 .\.dotnet\dotnet.exe publish src\UniversalClipboard.App\UniversalClipboard.App.csproj -c Release -r win-x64 --self-contained true -o artifacts\win-x64 /p:NuGetAudit=false
-Get-FileHash artifacts\win-x64\UniversalClipboard.App.exe, artifacts\win-x64\UniversalClipboard.App.dll -Algorithm SHA256
+Get-FileHash artifacts\win-x64\UniversalClipboard.exe, artifacts\win-x64\UniversalClipboard.dll -Algorithm SHA256 |
+    ForEach-Object { "$($_.Hash)  $([System.IO.Path]::GetFileName($_.Path))" } |
+    Set-Content artifacts\win-x64\UniversalClipboard-win-x64.sha256 -Encoding ASCII
 ```
 
 Expected result:
@@ -24,6 +26,10 @@ Expected result:
 - [ ] test succeeds and includes both test projects from `tests/`;
 - [ ] publish succeeds;
 - [ ] SHA-256 hashes are recorded for the published executable and DLL.
+- [ ] `UniversalClipboard-win-x64.zip` or the GitHub Actions artifact contains
+      `UniversalClipboard.exe` at the extracted root.
+- [ ] `UniversalClipboard-win-x64.zip` or the GitHub Actions artifact contains
+      `UniversalClipboard-win-x64.sha256` at the extracted root.
 
 ## Runtime Smoke Checks
 
@@ -46,7 +52,7 @@ curl.exe -k https://<LAN-IP>:43127/clip-api/clips
 
 Expected result:
 
-- [ ] published binary launches from `artifacts\win-x64\UniversalClipboard.App.exe`;
+- [ ] published binary launches from `artifacts\win-x64\UniversalClipboard.exe`;
 - [ ] TCP listener appears on the tray-selected LAN IPv4 address and port `43127`;
 - [ ] `GET https://<LAN-IP>:43127/` returns `200`;
 - [ ] unpaired `GET https://<LAN-IP>:43127/clip-api/clips` returns `401`;

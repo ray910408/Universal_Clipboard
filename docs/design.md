@@ -32,7 +32,7 @@ required before a browser can retrieve clipboard content.
 
 ```mermaid
 flowchart LR
-    A["Windows clipboard"] --> B["UniversalClipboard.App tray process"]
+    A["Windows clipboard"] --> B["UniversalClipboard.exe tray process"]
     B --> C["Local Kestrel HTTPS<br/>self-signed cert on :43127"]
     C --> D["iPhone Safari / Android Chrome page<br/>paired same-LAN browser"]
     D --> E{"Copy to phone"}
@@ -945,7 +945,9 @@ For the first release:
 
 - GitHub Actions builds and tests on Windows.
 - Release artifacts contain a self-contained `win-x64` portable application and
-  SHA-256 checksum.
+  SHA-256 checksum manifest. The downloadable artifact is
+  `UniversalClipboard-win-x64.zip`; after extraction, the user runs
+  `UniversalClipboard.exe`.
 - Setup documentation includes the exact administrator firewall command, network
   limitations, pairing, duration and permission semantics, self-signed HTTPS
   warning, TOFU identity reset behavior, incoming-text approval, Safari fallback,
