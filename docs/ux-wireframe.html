@@ -241,11 +241,11 @@
   </style>
 </head>
 <body>
-  <h1>Windows to iPhone Clipboard MVP</h1>
+  <h1>Windows to Mobile Clipboard MVP</h1>
   <p class="note">
     Wireframe for the current MVP: Windows remains the control surface, iPhone
-    Safari reads approved Windows clips, and write-enabled pairings can submit text
-    back to Windows for explicit tray approval.
+    Safari or Android Chrome reads approved Windows clips, and write-enabled
+    pairings can submit text back to Windows for explicit tray approval.
   </p>
 
   <main class="board">
@@ -271,21 +271,21 @@
         <span class="select">Wi-Fi 192.168.1.5</span>
       </div>
 
-      <h3>Pair iPhone</h3>
+      <h3>Pair phone</h3>
       <div class="qr">QR CODE</div>
       <p class="muted">Pairing code expires in 01:42. Changing duration or permission invalidates this QR.</p>
       <button class="primary">Pair</button>
 
       <h3>Paired devices</h3>
       <div class="list-row">
-        <span>Device: Kenneth's iPhone<br><small>Safari, Read / Write, last access 01:05 UTC</small></span>
+        <span>Device: Kenneth's Pixel<br><small>Chrome, Read / Write, last access 01:05 UTC</small></span>
         <button class="small-button">Revoke</button>
       </div>
       <button>Revoke all</button>
     </section>
 
     <section class="frame">
-      <div class="eyebrow">iPhone Safari, read path</div>
+      <div class="eyebrow">iPhone Safari / Android Chrome, read path</div>
       <h2>Copy to iPhone</h2>
       <span class="status">Paired: Read / Write</span>
 
@@ -311,11 +311,11 @@
     </section>
 
     <section class="frame">
-      <div class="eyebrow">iPhone Safari, write path</div>
+      <div class="eyebrow">iPhone Safari / Android Chrome, write path</div>
       <h2>Send to Windows</h2>
       <span class="status">Write enabled</span>
 
-      <div class="text-area">Text typed on iPhone that should become the Windows clipboard after tray approval.</div>
+      <div class="text-area">Text typed on the phone that should become the Windows clipboard after tray approval.</div>
       <button class="primary">Send to Windows</button>
       <p class="muted">Success means the text is pending in the Windows tray. It does not mean the Windows clipboard changed.</p>
 
@@ -342,7 +342,7 @@
       </div>
 
       <div class="list-row">
-        <span>Kenneth's iPhone - Safari<br><small>[masked 49 chars]</small></span>
+        <span>Kenneth's Pixel - Chrome<br><small>[masked 49 chars]</small></span>
       </div>
       <div class="button-row">
         <button class="primary">Apply to Windows Clipboard</button>
