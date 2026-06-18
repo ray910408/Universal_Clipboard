@@ -39,9 +39,10 @@ jobs:
       - name: SHA-256 checksum
         shell: pwsh
         run: |
-          $hash = Get-FileHash artifacts/win-x64/UniversalClipboard.App.exe -Algorithm SHA256
-          "$($hash.Hash)  UniversalClipboard.App.exe" | Set-Content -Path artifacts/win-x64/UniversalClipboard.App.exe.sha256 -Encoding ASCII
-          Get-Content artifacts/win-x64/UniversalClipboard.App.exe.sha256
+          Get-FileHash artifacts/win-x64/UniversalClipboard.exe, artifacts/win-x64/UniversalClipboard.dll -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash)  $([System.IO.Path]::GetFileName($_.Path))" } |
+            Set-Content -Path artifacts/win-x64/UniversalClipboard-win-x64.sha256 -Encoding ASCII
+          Get-Content artifacts/win-x64/UniversalClipboard-win-x64.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

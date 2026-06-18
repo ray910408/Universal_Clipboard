@@ -13,6 +13,9 @@ public sealed class ProjectShapeTests
             Path.Combine(root, "src", "UniversalClipboard.App", "UniversalClipboard.App.csproj"));
 
         ProjectValue(project, "OutputType").Should().Be("WinExe");
+        ProjectValue(project, "AssemblyName").Should().Be("UniversalClipboard");
+        ProjectValue(project, "RootNamespace").Should().Be("UniversalClipboard.App");
+        ProjectValue(project, "Product").Should().Be("Universal Clipboard");
         ProjectValue(project, "TargetFramework").Should().Be("net10.0-windows");
         ProjectValue(project, "UseWindowsForms").Should().Be("true");
         ProjectIncludes(project, "FrameworkReference").Should().ContainSingle()

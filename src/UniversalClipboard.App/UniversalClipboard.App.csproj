@@ -1,6 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <AssemblyName>UniversalClipboard</AssemblyName>
+    <RootNamespace>UniversalClipboard.App</RootNamespace>
+    <Product>Universal Clipboard</Product>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>

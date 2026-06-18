@@ -4,6 +4,8 @@ namespace UniversalClipboard.App.Web;
 
 internal static class WebAssets
 {
+    private const string ResourceRoot = "UniversalClipboard.App.wwwroot";
+
     public static (string ContentType, byte[] Bytes)? Get(string path)
     {
         var fileName = path switch
@@ -19,7 +21,7 @@ internal static class WebAssets
         }
 
         var assembly = typeof(WebAssets).Assembly;
-        var resourceName = $"{assembly.GetName().Name}.wwwroot.{fileName}";
+        var resourceName = $"{ResourceRoot}.{fileName}";
         using var stream = assembly.GetManifestResourceStream(resourceName)
             ?? throw new InvalidOperationException($"Missing embedded web asset {fileName}.");
         using var memory = new MemoryStream();
