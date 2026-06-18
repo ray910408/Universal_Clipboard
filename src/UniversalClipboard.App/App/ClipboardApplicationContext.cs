@@ -234,7 +234,7 @@ public sealed record TrayViewState(
             ImmutableArray<PendingClipboardViewItem>.Empty,
             ImmutableArray<PendingIncomingTextRow>.Empty,
             ImmutableArray<NetworkInterfaceOptionRow>.Empty,
-            "Unknown - test from iPhone",
+            "Unknown - test from phone",
             "Unknown",
             "Not listening",
             "docs/firewall-setup.md",
@@ -1089,8 +1089,8 @@ public sealed class ClipboardApplicationContext :
         {
             FirewallRuleStatus.ExactRuleFound => "Ready",
             FirewallRuleStatus.Missing => "Missing",
-            FirewallRuleStatus.Unknown => "Unknown - test from iPhone",
-            _ => "Unknown - test from iPhone",
+            FirewallRuleStatus.Unknown => "Unknown - test from phone",
+            _ => "Unknown - test from phone",
         };
 
     private static string BuildNetworkProfile(NetworkSharingState network) =>

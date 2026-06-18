@@ -37,6 +37,8 @@ public sealed partial class MobileAssetsTests
             .Should().Be("/clip-api/incoming-text");
         root.GetProperty("incoming").GetProperty("storageKey").GetString()
             .Should().Be("uc.permission");
+        root.GetProperty("incoming").GetProperty("storage").GetString()
+            .Should().Be("localStorage");
         root.GetProperty("incoming").GetProperty("readPermissions").EnumerateArray()
             .Select(value => value.GetString())
             .Should().Equal("read", "readWrite");
@@ -47,6 +49,12 @@ public sealed partial class MobileAssetsTests
             .Should().Contain("Write enabled");
         root.GetProperty("incoming").GetProperty("queued").GetString()
             .Should().Be("Pending in Windows tray.");
+        root.GetProperty("session").GetProperty("storageKey").GetString()
+            .Should().Be("uc.sessionProof");
+        root.GetProperty("session").GetProperty("storage").GetString()
+            .Should().Be("localStorage");
+        root.GetProperty("session").GetProperty("headerName").GetString()
+            .Should().Be("X-Clip-Session");
     }
 
     [Fact]
@@ -162,6 +170,58 @@ public sealed partial class MobileAssetsTests
         function.Should().NotContain("permission");
         script.Should().Contain("function detectDeviceName()");
         script.Should().Contain("function detectBrowserName()");
+    }
+
+    [Fact]
+    public void Session_proof_and_permission_use_durable_storage_with_session_fallback()
+    {
+        var script = ReadAsset("/app.js");
+        var readFunction = ExtractFunction(script, "readStoredValue");
+        var writeFunction = ExtractFunction(script, "writeStoredValue");
+        var removeFunction = ExtractFunction(script, "removeStoredValue");
+        var headersFunction = ExtractFunction(script, "sessionHeaders");
+        var pairingFunction = ExtractFunction(script, "exchangePairingFragment");
+        var clearFunction = ExtractFunction(script, "clearStoredSession");
+
+        readFunction.Should().Contain("window.localStorage.getItem");
+        readFunction.Should().Contain("window.sessionStorage.getItem");
+        writeFunction.Should().Contain("window.localStorage.setItem");
+        writeFunction.Should().Contain("window.sessionStorage.setItem");
+        removeFunction.Should().Contain("window.localStorage.removeItem");
+        removeFunction.Should().Contain("window.sessionStorage.removeItem");
+        headersFunction.Should().Contain("readStoredValue(CONTRACT.session.storageKey)");
+        headersFunction.Should().NotContain("sessionStorage.getItem");
+        pairingFunction.Should().Contain(
+            "writeStoredValue(CONTRACT.session.storageKey, pairing.sessionProof)");
+        pairingFunction.Should().Contain(
+            "writeStoredValue(CONTRACT.incoming.storageKey, pairing.permission || \"read\")");
+        clearFunction.Should().Contain("removeStoredValue(CONTRACT.session.storageKey)");
+        clearFunction.Should().Contain("removeStoredValue(CONTRACT.incoming.storageKey)");
+    }
+
+    [Theory]
+    [InlineData("SamsungBrowser", "Samsung Internet", "Chrome/")]
+    [InlineData("EdgiOS", "Edge", "Chrome/")]
+    [InlineData("EdgA", "Edge", "Chrome/")]
+    [InlineData("Edg/", "Edge", "Chrome/")]
+    [InlineData("FxiOS", "Firefox", "Safari")]
+    [InlineData("Firefox/", "Firefox", "Safari")]
+    [InlineData("CriOS", "Chrome", "Safari")]
+    [InlineData("Chrome/", "Chrome", "Safari")]
+    [InlineData("Chromium/", "Chrome", "Safari")]
+    public void Browser_detection_prioritizes_mobile_tokens_before_ambiguous_fallbacks(
+        string token,
+        string browserName,
+        string ambiguousToken)
+    {
+        var function = ExtractFunction(ReadAsset("/app.js"), "detectBrowserName");
+        var tokenIndex = function.IndexOf($"\"{token}\"", StringComparison.Ordinal);
+        var returnIndex = function.IndexOf($"return \"{browserName}\"", tokenIndex, StringComparison.Ordinal);
+        var ambiguousIndex = function.IndexOf($"\"{ambiguousToken}\"", StringComparison.Ordinal);
+
+        tokenIndex.Should().BeGreaterThanOrEqualTo(0);
+        returnIndex.Should().BeGreaterThan(tokenIndex);
+        tokenIndex.Should().BeLessThan(ambiguousIndex);
     }
 
     [Fact]

@@ -336,7 +336,7 @@ public sealed class NetworkCoordinatorTests
     [InlineData("wrong-action", true, FirewallRuleAction.Block, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
     [InlineData("wrong-protocol", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Udp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
     [InlineData("wrong-port", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43128, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
-    public void Firewall_query_reports_unknown_for_non_exact_iPhone_rule(
+    public void Firewall_query_reports_unknown_for_non_exact_mobile_rule(
         string name,
         bool isEnabled,
         FirewallRuleAction action,

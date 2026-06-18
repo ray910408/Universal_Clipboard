@@ -29,6 +29,7 @@ const CONTRACT = Object.freeze(
   "incoming": {
     "endpoint": "/clip-api/incoming-text",
     "storageKey": "uc.permission",
+    "storage": "localStorage",
     "readPermissions": ["read", "readWrite"],
     "writePermissions": ["write", "readWrite"],
     "disabled": "Re-pair from Windows with Write enabled.",
@@ -38,6 +39,7 @@ const CONTRACT = Object.freeze(
   },
   "session": {
     "storageKey": "uc.sessionProof",
+    "storage": "localStorage",
     "headerName": "X-Clip-Session"
   }
 }
@@ -91,8 +93,8 @@ function stopPolling() {
 function resetFeed() {
   stopPolling();
   clearClipboardDom();
-  sessionStorage.removeItem(CONTRACT.session.storageKey);
-  sessionStorage.removeItem(CONTRACT.incoming.storageKey);
+  removeStoredValue(CONTRACT.session.storageKey);
+  removeStoredValue(CONTRACT.incoming.storageKey);
   updateIncomingPermission(null);
   instanceId = null;
   version = null;
@@ -145,19 +147,75 @@ function schedulePoll() {
   }, CONTRACT.pollIntervalMs);
 }
 
-function sessionHeaders() {
-  const sessionProof = sessionStorage.getItem(CONTRACT.session.storageKey);
-  return sessionProof === null
-    ? {}
-    : { [CONTRACT.session.headerName]: sessionProof };
-}
-
 function canSendToWindows(permission) {
   return CONTRACT.incoming.writePermissions.includes(permission);
 }
 
 function canReadFromWindows(permission) {
   return permission === null || CONTRACT.incoming.readPermissions.includes(permission);
+}
+
+function readStoredValue(key) {
+  try {
+    const value = window.localStorage.getItem(key);
+    if (value !== null) {
+      return value;
+    }
+  } catch {
+    // Fall through to sessionStorage for browsers that block localStorage.
+  }
+
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredValue(key, value) {
+  let wroteLocal = false;
+  try {
+    window.localStorage.setItem(key, value);
+    wroteLocal = true;
+  } catch {
+    // Fall through to sessionStorage for browsers that block localStorage.
+  }
+
+  if (wroteLocal) {
+    try {
+      window.sessionStorage.removeItem(key);
+    } catch {
+      // localStorage already holds the canonical value.
+    }
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch {
+    // The next authenticated request will fail closed if storage is unavailable.
+  }
+}
+
+function removeStoredValue(key) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Best-effort cleanup.
+  }
+
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
+function sessionHeaders() {
+  const sessionProof = readStoredValue(CONTRACT.session.storageKey);
+  return sessionProof === null
+    ? {}
+    : { [CONTRACT.session.headerName]: sessionProof };
 }
 
 function updateIncomingPermission(permission) {
@@ -173,8 +231,8 @@ function updateIncomingPermission(permission) {
 }
 
 function clearStoredSession() {
-  sessionStorage.removeItem(CONTRACT.session.storageKey);
-  sessionStorage.removeItem(CONTRACT.incoming.storageKey);
+  removeStoredValue(CONTRACT.session.storageKey);
+  removeStoredValue(CONTRACT.incoming.storageKey);
   updateIncomingPermission(null);
 }
 
@@ -278,7 +336,7 @@ async function pollClips(forceFull) {
     return;
   }
 
-  if (!canReadFromWindows(sessionStorage.getItem(CONTRACT.incoming.storageKey))) {
+  if (!canReadFromWindows(readStoredValue(CONTRACT.incoming.storageKey))) {
     instanceId = null;
     version = null;
     renderItems([]);
@@ -349,16 +407,26 @@ async function pollClips(forceFull) {
 
 function detectBrowserName() {
   const userAgent = navigator.userAgent;
+  if (userAgent.includes("SamsungBrowser")) {
+    return "Samsung Internet";
+  }
+
+  if (userAgent.includes("EdgiOS") ||
+      userAgent.includes("EdgA") ||
+      userAgent.includes("Edg/")) {
+    return "Edge";
+  }
+
+  if (userAgent.includes("FxiOS") || userAgent.includes("Firefox/")) {
+    return "Firefox";
+  }
+
   if (userAgent.includes("CriOS")) {
     return "Chrome";
   }
 
-  if (userAgent.includes("FxiOS")) {
-    return "Firefox";
-  }
-
-  if (userAgent.includes("EdgiOS")) {
-    return "Edge";
+  if (userAgent.includes("Chrome/") || userAgent.includes("Chromium/")) {
+    return "Chrome";
   }
 
   if (userAgent.includes("Safari")) {
@@ -430,7 +498,7 @@ async function sendIncomingText() {
     }
 
     if (response.status === 403) {
-      sessionStorage.setItem(CONTRACT.incoming.storageKey, "read");
+      writeStoredValue(CONTRACT.incoming.storageKey, "read");
       updateIncomingPermission("read");
       return;
     }
@@ -445,7 +513,7 @@ async function sendIncomingText() {
     incomingStatus.textContent = CONTRACT.incoming.failed;
   } finally {
     incomingSend.disabled = !canSendToWindows(
-      sessionStorage.getItem(CONTRACT.incoming.storageKey));
+      readStoredValue(CONTRACT.incoming.storageKey));
   }
 }
 
@@ -477,8 +545,8 @@ async function exchangePairingFragment() {
       throw new Error("pairing proof missing");
     }
 
-    sessionStorage.setItem(CONTRACT.session.storageKey, pairing.sessionProof);
-    sessionStorage.setItem(CONTRACT.incoming.storageKey, pairing.permission || "read");
+    writeStoredValue(CONTRACT.session.storageKey, pairing.sessionProof);
+    writeStoredValue(CONTRACT.incoming.storageKey, pairing.permission || "read");
     updateIncomingPermission(pairing.permission || "read");
     await pollClips(true);
   } catch {
@@ -501,7 +569,7 @@ async function refreshAfterPageShow() {
 
   refreshInProgress = true;
   try {
-    updateIncomingPermission(sessionStorage.getItem(CONTRACT.incoming.storageKey));
+    updateIncomingPermission(readStoredValue(CONTRACT.incoming.storageKey));
     if (applyLifecycleTransition("pageshow")) {
       await pollClips(true);
     }
@@ -540,4 +608,4 @@ incomingSend.addEventListener("click", () => {
   void sendIncomingText();
 });
 
-updateIncomingPermission(sessionStorage.getItem(CONTRACT.incoming.storageKey));
+updateIncomingPermission(readStoredValue(CONTRACT.incoming.storageKey));

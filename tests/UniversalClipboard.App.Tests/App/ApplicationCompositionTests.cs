@@ -36,7 +36,7 @@ public sealed class ApplicationCompositionTests
         fixture.Window.State.ServiceStatus.Should().Be("Running");
         fixture.Window.State.SelectedUrl.Should().Be("https://192.168.1.5:43127/");
         fixture.Window.State.SelectedDuration.Should().Be(AuthorizationDuration.FiveHours);
-        fixture.Window.State.FirewallStatus.Should().Be("Unknown - test from iPhone");
+        fixture.Window.State.FirewallStatus.Should().Be("Unknown - test from phone");
         fixture.Window.State.NetworkProfile.Should().Be("Private");
         fixture.Window.State.PortListeningStatus.Should().Be("Listening on TCP 43127");
         fixture.Window.State.FirewallSetupHelp.Should().Be("docs/firewall-setup.md");
