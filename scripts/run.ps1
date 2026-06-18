@@ -34,6 +34,44 @@ function Test-IsAdministrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-UniversalClipboardFirewallRule {
+    param([string]$RuleName)
+
+    @(
+        Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue
+        Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue
+    ) | Sort-Object -Property Name -Unique
+}
+
+function Test-UniversalClipboardFirewallRule {
+    param(
+        [Parameter(Mandatory = $true)]$Rule,
+        [string]$RuleName
+    )
+
+    try {
+        $portFilter = @($Rule | Get-NetFirewallPortFilter)
+        $addressFilter = @($Rule | Get-NetFirewallAddressFilter)
+        if ($portFilter.Count -ne 1 -or $addressFilter.Count -ne 1) {
+            return $false
+        }
+
+        return (
+            [string]$Rule.Name -eq $RuleName -and
+            [string]$Rule.DisplayName -eq $RuleName -and
+            [string]$Rule.Enabled -eq 'True' -and
+            [string]$Rule.Direction -eq 'Inbound' -and
+            [string]$Rule.Action -eq 'Allow' -and
+            [string]$Rule.Profile -eq 'Private' -and
+            [string]$portFilter[0].Protocol -eq 'TCP' -and
+            [string]$portFilter[0].LocalPort -eq '43127' -and
+            [string]$addressFilter[0].RemoteAddress -eq 'LocalSubnet'
+        )
+    } catch {
+        return $false
+    }
+}
+
 function Invoke-DotNetCommand {
     param(
         [string]$DotNetPath,
@@ -172,12 +210,21 @@ if ($ConfigureFirewall) {
     }
 
     $displayName = 'Universal Clipboard LAN'
-    $existingRule = Get-NetFirewallRule -DisplayName $displayName -ErrorAction SilentlyContinue
+    $existingRule = @(Get-UniversalClipboardFirewallRule -RuleName $displayName)
+    $exactRule = @($existingRule | Where-Object {
+        Test-UniversalClipboardFirewallRule -Rule $_ -RuleName $displayName
+    })
 
-    if ($existingRule) {
+    if ($existingRule.Count -eq 1 -and $exactRule.Count -eq 1) {
         Write-Info "Firewall rule already exists: $displayName"
     } else {
+        if ($existingRule.Count -gt 0) {
+            Write-Info "Removing stale or malformed firewall rule before creating: $displayName"
+            $existingRule | Remove-NetFirewallRule
+        }
+
         New-NetFirewallRule `
+            -Name $displayName `
             -DisplayName $displayName `
             -Direction Inbound `
             -Action Allow `
@@ -188,8 +235,9 @@ if ($ConfigureFirewall) {
         Write-Info "Created firewall rule: $displayName"
     }
 } else {
-    Write-Step 'Skipping firewall changes'
-    Write-Info 'To create the Private + LocalSubnet firewall rule, rerun from Administrator PowerShell:'
+    Write-Step 'Skipping script-level firewall changes'
+    Write-Info 'UniversalClipboard.exe will request elevation to create its runtime Private + LocalSubnet firewall rule.'
+    Write-Info 'To create the rule before launch instead, rerun from Administrator PowerShell:'
     Write-Info '.\scripts\run.ps1 -ConfigureFirewall'
 }
 

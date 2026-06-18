@@ -501,21 +501,28 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
 
 ### Windows Firewall
 
-The first release does not modify Windows Firewall automatically.
+`UniversalClipboard.exe` first checks that the extracted runtime payload contains
+the required bundled files declared by its `.deps.json` runtime/native asset
+manifest, then manages one TCP 43127 inbound Windows Firewall rule named
+`Universal Clipboard LAN`. On launch, the app checks for a single exact rule whose
+`Name` and `DisplayName` are both `Universal Clipboard LAN`, restricted to the
+Private profile and LocalSubnet, asks for elevation if the rule is missing or
+malformed, and creates a clean replacement. Normal Tray **Exit** removes matching
+rules even if exit cleanup fails before the WinForms message loop stops.
+Documentation keeps an administrator PowerShell fallback for denied elevation,
+script-based source runs, and cleanup after forced termination.
 
-Documentation provides one administrator PowerShell command that creates a TCP 43127
-inbound rule restricted to the Private profile and LocalSubnet. The tray checks
-whether the port is reachable locally and displays:
+The tray checks whether the port is reachable locally and displays:
 
 - selected interface and URL;
 - network profile;
 - port-listening state;
 - firewall setup link.
 
-The app never recommends enabling the rule for Public profiles. A local listening
-check proves only that Kestrel is running. If the exact expected firewall rule cannot
-be found, the tray reports firewall reachability as `Unknown - test from phone`,
-not `Blocked` or `Allowed`.
+The app never enables the rule for Public profiles. A local listening check proves
+only that Kestrel is running. If the exact expected firewall rule cannot be found,
+the tray reports firewall reachability as `Unknown - test from phone`, not
+`Blocked` or `Allowed`.
 
 ### Web Host
 
@@ -797,7 +804,8 @@ Security-related UI uses precise wording:
 - Multiple eligible interfaces: user selects one.
 - Windows network profile is Public: warn and do not recommend a firewall exception.
 - Port 43127 is occupied: sharing stays disabled until the conflict is resolved.
-- Firewall blocked: show the URL and focused setup instructions.
+- Firewall blocked or automatic elevation denied: show the URL and focused setup
+  instructions.
 - Phone cannot connect: suggest checking same Wi-Fi, guest/client isolation, VPN,
   selected adapter, and Windows Firewall.
 - Pairing code expired or was consumed: generate a new QR code.
@@ -836,7 +844,8 @@ The MVP is complete only when all of these are true:
 11. All five requested authorization durations work, including server-side
     until-revoked behavior for permanent authorization.
 12. A clean Windows machine can reach first successful pairing and transfer within
-    ten minutes using documented firewall setup.
+    ten minutes using the exe-managed firewall setup or the documented manual
+    fallback.
 13. A successful revoke remains revoked after forced process termination and restart;
     a failed persistence operation reports failure and leaves the prior authorization
     state unchanged.
@@ -948,10 +957,12 @@ For the first release:
   SHA-256 checksum manifest. The downloadable artifact is
   `UniversalClipboard-win-x64.zip`; after extraction, the user runs
   `UniversalClipboard.exe`.
-- Setup documentation includes the exact administrator firewall command, network
-  limitations, pairing, duration and permission semantics, self-signed HTTPS
-  warning, TOFU identity reset behavior, incoming-text approval, Safari fallback,
-  and Android Chrome bidirectional support.
+- Setup documentation describes exe-managed `.deps.json` runtime payload checks,
+  firewall creation, and Tray Exit cleanup, includes the exact administrator
+  firewall fallback command, network limitations, pairing, duration and permission
+  semantics, self-signed HTTPS warning, TOFU identity reset behavior,
+  incoming-text approval, Safari fallback, and Android Chrome bidirectional
+  support.
 - Code signing and an installer are deferred. Documentation warns that an unsigned
   build may trigger Windows SmartScreen.
 

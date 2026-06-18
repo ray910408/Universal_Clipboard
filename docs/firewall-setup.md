@@ -1,12 +1,16 @@
 # Windows Firewall Setup
 
 Universal Clipboard listens on TCP port `43127` on one selected private LAN IPv4
-address. The MVP does not change Windows Firewall automatically.
+address. `UniversalClipboard.exe` manages the required Windows Firewall rule for
+the normal runtime path: it asks for elevation on launch if it needs to create or
+repair the rule, and Tray **Exit** removes the rule during normal shutdown.
 
-Run this command in **Administrator PowerShell**:
+If automatic setup is denied or you need to prepare the rule before launch, run
+this command in **Administrator PowerShell**:
 
 ```powershell
 New-NetFirewallRule `
+  -Name "Universal Clipboard LAN" `
   -DisplayName "Universal Clipboard LAN" `
   -Direction Inbound `
   -Action Allow `
@@ -16,9 +20,9 @@ New-NetFirewallRule `
   -RemoteAddress LocalSubnet
 ```
 
-The exact rule matters. The tray recognizes only a rule named
-`Universal Clipboard LAN` that is enabled, inbound allow, TCP, local port `43127`,
-Private profile, and `LocalSubnet` remote scope.
+The exact rule matters. The tray recognizes only a rule whose `Name` and
+`DisplayName` are both `Universal Clipboard LAN`, enabled, inbound allow, TCP,
+local port `43127`, Private profile, and `LocalSubnet` remote scope.
 
 Do not create a Public-profile rule. If Windows reports the network as Public,
 change the network profile to Private first.
@@ -26,10 +30,12 @@ change the network profile to Private first.
 ## Verify
 
 ```powershell
-Get-NetFirewallRule -DisplayName "Universal Clipboard LAN" |
+$rule = Get-NetFirewallRule -Name "Universal Clipboard LAN"
+
+$rule |
   Get-NetFirewallPortFilter
 
-Get-NetFirewallRule -DisplayName "Universal Clipboard LAN" |
+$rule |
   Get-NetFirewallAddressFilter
 ```
 
@@ -42,7 +48,9 @@ Expected values:
 
 ## Remove
 
-Run this command in **Administrator PowerShell**:
+Tray **Exit** removes the runtime rule during normal shutdown. If the process is
+terminated or automatic cleanup fails, run this command in **Administrator
+PowerShell**:
 
 ```powershell
 .\scripts\remove-firewall.ps1
@@ -51,7 +59,7 @@ Run this command in **Administrator PowerShell**:
 Equivalent manual command:
 
 ```powershell
-Remove-NetFirewallRule -DisplayName "Universal Clipboard LAN"
+Remove-NetFirewallRule -Name "Universal Clipboard LAN"
 ```
 
 ## If Phone Still Cannot Connect

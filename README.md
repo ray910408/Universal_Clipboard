@@ -30,9 +30,12 @@ Windows management stays in the **Tray UI**. Use the tray window to choose the L
 interface, generate a QR code, and view the phone URL. iPhone Safari or Android
 Chrome uses the tray URL, for example `https://<LAN-IP>:43127/`.
 
-When Windows asks for firewall access, allow **Private networks**. The same network
-must be Private and TCP port `43127` must be reachable from the phone. If the phone
-cannot load the tray URL, use the manual firewall rule in
+On launch, `UniversalClipboard.exe` checks the extracted runtime payload against
+its `.deps.json` runtime/native asset manifest, then checks for the required
+Private + LocalSubnet Windows Firewall rule and asks for elevation if it needs to
+create or repair it. The same network must be Private and TCP port `43127` must be
+reachable from the phone. Normal Tray **Exit** removes the app-created firewall
+rule. If the phone cannot load the tray URL, use the manual firewall guidance in
 [docs/firewall-setup.md](docs/firewall-setup.md).
 
 Scan the tray QR code with iPhone Safari or Android Chrome, accept the self-signed
@@ -107,15 +110,17 @@ Unsigned local builds may trigger Windows SmartScreen. That is expected for this
 MVP; verify the source and checksums before running builds you did not create.
 
 For source development, `.\scripts\run.ps1` runs `scripts\bootstrap.ps1`, restores
-packages when needed, builds, and starts the tray app. To create the documented
-Private + LocalSubnet inbound firewall rule for TCP `43127`, run from
+packages when needed, builds, and starts the tray app. The app can request
+elevation to manage its runtime firewall rule. To create the documented Private +
+LocalSubnet inbound firewall rule for TCP `43127` before launch, run from
 **Administrator PowerShell**:
 
 ```powershell
 .\scripts\run.ps1 -ConfigureFirewall
 ```
 
-To remove the firewall rule later, run:
+Tray **Exit** removes the runtime firewall rule during normal shutdown. To remove
+the rule manually, run:
 
 ```powershell
 .\scripts\remove-firewall.ps1
@@ -126,7 +131,8 @@ To remove the firewall rule later, run:
 1. Set the Windows network profile to **Private**.
 2. Extract `UniversalClipboard-win-x64.zip`.
 3. Launch `UniversalClipboard.exe`.
-4. Allow Windows Firewall access for **Private networks** if Windows prompts.
+4. Approve the Windows elevation prompt if the app needs to create or repair the
+   Private + LocalSubnet firewall rule.
 5. If multiple eligible LAN interfaces are shown, choose the one on the same network
    as the phone.
 6. Choose a pairing duration. The default is **5 hours**.
@@ -205,8 +211,10 @@ Important limits:
 - **Tray says Public network**: switch the Windows network profile to Private.
 - **Phone cannot load the URL**: check same Wi-Fi, guest/client isolation, VPN, and
   Windows Firewall.
-- **Firewall shows Unknown**: the tray only recognizes the exact Private +
-  LocalSubnet rule documented in [docs/firewall-setup.md](docs/firewall-setup.md).
+- **Firewall shows Unknown**: restart the app and approve elevation so it can
+  repair the exact Private + LocalSubnet rule with both `Name` and `DisplayName`
+  set to `Universal Clipboard LAN`, or use
+  [docs/firewall-setup.md](docs/firewall-setup.md) manually.
 - **Port conflict**: another process is listening on TCP `43127`; stop it before
   starting sharing.
 - **The mobile browser shows a new certificate warning after it previously worked**:

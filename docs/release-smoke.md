@@ -33,8 +33,10 @@ Expected result:
 
 ## Runtime Smoke Checks
 
-Launch the published binary on a trusted Private LAN. Windows management remains in
-the Tray UI. iPhone Safari or Android Chrome uses the tray-reported LAN URL, for example
+Launch the published binary on a trusted Private LAN. Approve the Windows
+elevation prompt if the app needs to create or repair its Private + LocalSubnet
+firewall rule. Windows management remains in the Tray UI. iPhone Safari or
+Android Chrome uses the tray-reported LAN URL, for example
 `https://<LAN-IP>:43127/`.
 
 Because the MVP uses a persisted self-signed HTTPS certificate, command-line smoke
@@ -52,7 +54,11 @@ curl.exe -k https://<LAN-IP>:43127/clip-api/clips
 
 Expected result:
 
-- [ ] published binary launches from `artifacts\win-x64\UniversalClipboard.exe`;
+- [ ] published binary launches from `artifacts\win-x64\UniversalClipboard.exe`
+      after validating its extracted `.deps.json` runtime/native payload;
+- [ ] launch creates or repairs exactly one enabled inbound allow rule whose
+      `Name` and `DisplayName` are both `Universal Clipboard LAN`, for TCP
+      `43127`, Private profile, and `LocalSubnet` remote scope;
 - [ ] TCP listener appears on the tray-selected LAN IPv4 address and port `43127`;
 - [ ] `GET https://<LAN-IP>:43127/` returns `200`;
 - [ ] unpaired `GET https://<LAN-IP>:43127/clip-api/clips` returns `401`;
@@ -61,7 +67,8 @@ Expected result:
 - [ ] **Reset HTTPS** changes the tray HTTPS identity and revokes existing pairings;
 - [ ] second launch activates the existing tray owner instead of creating a second
       long-running owner process;
-- [ ] tray **Exit** removes the TCP listener.
+- [ ] tray **Exit** removes the TCP listener;
+- [ ] tray **Exit** removes the `Universal Clipboard LAN` firewall rule.
 
 ## Manual iPhone Safari Gates
 

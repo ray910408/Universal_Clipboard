@@ -37,6 +37,29 @@ public sealed class ProjectShapeTests
         project.ToString().Should().NotContain("Microsoft.AspNetCore");
     }
 
+    [Fact]
+    public void Firewall_scripts_preserve_exact_name_displayname_private_localsubnet_contract()
+    {
+        var root = FindRepositoryRoot();
+        var runScript = File.ReadAllText(Path.Combine(root, "scripts", "run.ps1"));
+        var removeScript = File.ReadAllText(Path.Combine(root, "scripts", "remove-firewall.ps1"));
+
+        runScript.Should().Contain("Test-UniversalClipboardFirewallRule");
+        runScript.Should().Contain("Get-NetFirewallRule -Name $RuleName");
+        runScript.Should().Contain("Get-NetFirewallRule -DisplayName $RuleName");
+        runScript.Should().Contain("[string]$Rule.Name -eq $RuleName");
+        runScript.Should().Contain("[string]$Rule.DisplayName -eq $RuleName");
+        runScript.Should().Contain("-Name $displayName");
+        runScript.Should().Contain("-DisplayName $displayName");
+        runScript.Should().Contain("-Profile Private");
+        runScript.Should().Contain("-RemoteAddress LocalSubnet");
+
+        removeScript.Should().Contain("Get-NetFirewallRule -Name $DisplayName");
+        removeScript.Should().Contain("Get-NetFirewallRule -DisplayName $DisplayName");
+        removeScript.Should().Contain("Sort-Object -Property Name -Unique");
+        removeScript.Should().Contain("Remove-NetFirewallRule");
+    }
+
     private static string ProjectValue(XDocument project, string name) =>
         project.Descendants(name).Single().Value;
 
