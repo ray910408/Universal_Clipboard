@@ -1105,6 +1105,97 @@ public sealed class ApplicationCompositionTests
     }
 
     [Fact]
+    public void Pairing_code_is_not_created_when_share_url_exists_but_port_is_not_listening()
+    {
+        var fixture = new Fixture();
+        fixture.Sharing.State = new NetworkSharingState(
+            NetworkSharingStatus.Starting,
+            "wifi",
+            IPAddress.Parse("192.168.1.5"),
+            "https://192.168.1.5:43127/",
+            NetworkProfile.Private,
+            43127,
+            IsPortListening: false,
+            FirewallRuleStatus.Unknown,
+            null);
+
+        fixture.Context.CreatePairingCode();
+
+        fixture.PairingCodes.LastDuration.Should().BeNull();
+        fixture.PairingCodes.InvalidateCount.Should().Be(1);
+        fixture.Qr.Payloads.Should().BeEmpty();
+        fixture.Context.ViewState.Pairing.Should().BeNull();
+        fixture.Window.State.ServiceStatus.Should().Be("Starting");
+        fixture.Window.State.PortListeningStatus.Should().Be("Not listening on TCP 43127");
+        var notification = fixture.Notifications.Items.Should().ContainSingle().Subject;
+        notification.Title.Should().Be("Pairing code was not created");
+        notification.Body.Should().Be(
+            "Sharing is not ready yet. Wait until it shows Running before pairing.");
+        fixture.Window.ShowCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void Pairing_code_is_not_silent_when_share_url_is_missing()
+    {
+        var fixture = new Fixture();
+        fixture.Sharing.State = new NetworkSharingState(
+            NetworkSharingStatus.NoEligibleInterface,
+            null,
+            null,
+            null,
+            null,
+            43127,
+            IsPortListening: false,
+            FirewallRuleStatus.Unknown,
+            null);
+
+        fixture.Context.CreatePairingCode();
+
+        fixture.PairingCodes.LastDuration.Should().BeNull();
+        fixture.PairingCodes.InvalidateCount.Should().Be(1);
+        fixture.Qr.Payloads.Should().BeEmpty();
+        fixture.Context.ViewState.Pairing.Should().BeNull();
+        fixture.Window.State.ServiceStatus.Should().Be("No eligible interface");
+        var notification = fixture.Notifications.Items.Should().ContainSingle().Subject;
+        notification.Title.Should().Be("Pairing code was not created");
+        notification.Body.Should().Be(
+            "No eligible private network interface is available. Connect to a private network before pairing.");
+        fixture.Window.ShowCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void Pairing_code_is_invalidated_when_existing_code_becomes_unavailable()
+    {
+        var fixture = new Fixture();
+        fixture.Sharing.State = RunningState(
+            "https://192.168.1.5:43127/",
+            FirewallRuleStatus.Unknown);
+        fixture.Context.CreatePairingCode();
+
+        fixture.Sharing.State = new NetworkSharingState(
+            NetworkSharingStatus.Running,
+            "wifi",
+            IPAddress.Parse("192.168.1.5"),
+            "https://192.168.1.5:43127/",
+            NetworkProfile.Private,
+            43127,
+            IsPortListening: false,
+            FirewallRuleStatus.Unknown,
+            null);
+        fixture.Context.CreatePairingCode();
+
+        fixture.PairingCodes.InvalidateCount.Should().Be(1);
+        fixture.Qr.Payloads.Should().ContainSingle();
+        fixture.Context.ViewState.Pairing.Should().BeNull();
+        var notification = fixture.Notifications.Items.Should().ContainSingle().Subject;
+        notification.Title.Should().Be("Pairing code was not created");
+        notification.Body.Should().Be(
+            "The local service is not listening on TCP 43127. Wait for sharing to finish starting before pairing.");
+        fixture.Window.ShowCount.Should().Be(1);
+    }
+
+
+    [Fact]
     public void Changing_pairing_permissions_invalidates_existing_pairing_code()
     {
         var fixture = new Fixture();
