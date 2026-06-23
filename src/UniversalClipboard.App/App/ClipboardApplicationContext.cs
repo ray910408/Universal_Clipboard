@@ -432,8 +432,20 @@ public sealed class ClipboardApplicationContext :
     public void CreatePairingCode()
     {
         var state = _services.Sharing.CurrentState;
-        if (string.IsNullOrWhiteSpace(state.SelectedUrl))
+        if (state.Status != NetworkSharingStatus.Running ||
+            !state.IsPortListening ||
+            string.IsNullOrWhiteSpace(state.SelectedUrl))
         {
+            lock (_gate)
+            {
+                _pairing = null;
+            }
+
+            _services.PairingCodes.Invalidate();
+            NotifyAndShow(
+                "Pairing code was not created",
+                BuildPairingUnavailableMessage(state));
+            RefreshView();
             return;
         }
 
@@ -842,6 +854,32 @@ public sealed class ClipboardApplicationContext :
 
     private bool IsPairingCurrent(PairingViewState? pairing) =>
         pairing is not null && _timeProvider.GetUtcNow() < pairing.ExpiresAtUtc;
+
+    private static string BuildPairingUnavailableMessage(NetworkSharingState state)
+    {
+        return state.Status switch
+        {
+            NetworkSharingStatus.SelectionRequired =>
+                "Select a network interface before pairing.",
+            NetworkSharingStatus.NoEligibleInterface =>
+                "No eligible private network interface is available. Connect to a private network before pairing.",
+            NetworkSharingStatus.PublicProfileBlocked =>
+                "Windows reports this network as Public. Switch it to Private before pairing.",
+            NetworkSharingStatus.PortConflict =>
+                $"TCP {state.Port} is already in use. Free the port and restart sharing before pairing.",
+            NetworkSharingStatus.AuthorizationPersistenceFailed =>
+                "Pairing is unavailable because authorizations could not be saved. Restart sharing and try again.",
+            NetworkSharingStatus.Starting =>
+                "Sharing is not ready yet. Wait until it shows Running before pairing.",
+            NetworkSharingStatus.Shutdown =>
+                "Start sharing before pairing.",
+            NetworkSharingStatus.Running when !state.IsPortListening =>
+                $"The local service is not listening on TCP {state.Port}. Wait for sharing to finish starting before pairing.",
+            NetworkSharingStatus.Running =>
+                "No sharing URL is available. Select a network interface and start sharing before pairing.",
+            _ => "Sharing is not ready yet. Wait until it shows Running before pairing.",
+        };
+    }
 
     private void NotifyAndShow(string title, string body)
     {
