@@ -221,6 +221,11 @@ Important limits:
   confirm the tray HTTPS identity did not change unexpectedly. A new selected IP,
   expired or corrupt local identity, or **Reset HTTPS** creates a new certificate,
   revokes existing pairings, and requires pairing again.
+- **Pairing code was not created**: sharing is not ready. The tray notification
+  names the exact reason, for example no eligible interface, a Public network
+  profile, a port conflict, or sharing still starting. Any previous pairing code
+  is invalidated. Fix the named issue, wait for the tray to show Running, then
+  generate a new QR code.
 - **Expired or reused QR**: generate a new pairing code. Codes are single-use and
   expire after two minutes.
 - **Copy button does not confirm Copied**: use the visible selected text and
