@@ -140,7 +140,7 @@ the rule manually, run:
    before generating the QR code if the phone should both read Windows clips and
    send text back. Select **Write only** only when the phone should submit text but
    not read the Windows feed.
-8. Generate a pairing QR code in the tray window.
+8. Generate a pairing QR code in the tray window once it shows **Running**.
 9. Open or scan the pairing URL on iPhone Safari or Android Chrome.
 10. Copy text on Windows. Sensitive-looking text is held for approval in the tray.
 11. On the phone, tap **Copy to iPhone**. If the browser does not allow one-tap
@@ -221,11 +221,12 @@ Important limits:
   confirm the tray HTTPS identity did not change unexpectedly. A new selected IP,
   expired or corrupt local identity, or **Reset HTTPS** creates a new certificate,
   revokes existing pairings, and requires pairing again.
-- **Pairing code was not created**: sharing is not ready. The tray notification
-  names the exact reason, for example no eligible interface, a Public network
-  profile, a port conflict, or sharing still starting. Any previous pairing code
-  is invalidated. Fix the named issue, wait for the tray to show Running, then
-  generate a new QR code.
+- **Pairing code was not created**: sharing is not ready. The tray window opens
+  with a notification naming the exact reason, for example sharing stopped, no
+  interface selected, no eligible interface, a Public network profile, a port
+  conflict, or sharing still starting. Any previous pairing code is invalidated.
+  Fix the named issue — start sharing, select an interface, or wait for the tray
+  to show Running — then generate a new QR code.
 - **Expired or reused QR**: generate a new pairing code. Codes are single-use and
   expire after two minutes.
 - **Copy button does not confirm Copied**: use the visible selected text and

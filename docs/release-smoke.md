@@ -67,8 +67,9 @@ Expected result:
 - [ ] **Reset HTTPS** changes the tray HTTPS identity and revokes existing pairings;
 - [ ] second launch activates the existing tray owner instead of creating a second
       long-running owner process;
-- [ ] generating a pairing code before sharing shows Running produces no QR code
-      and shows a **Pairing code was not created** notification naming the reason;
+- [ ] with sharing stopped from the tray, generating a pairing code produces no QR
+      code, invalidates any previously generated code, opens the tray window, and
+      shows a **Pairing code was not created** notification naming the reason;
 - [ ] tray **Exit** removes the TCP listener;
 - [ ] tray **Exit** removes the `Universal Clipboard LAN` firewall rule.
 

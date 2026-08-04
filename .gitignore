@@ -13,10 +13,12 @@ artifacts/
 *.suo
 
 # local agent/index state
+.agents/
 .codegraph/
 .cursor/
 .gstack/
 .hermes/
+.serena/
 
 # local docs and generated test output
 docs/superpowers/

@@ -349,7 +349,8 @@ vectors, and runs in linear time. A match means `possible sensitive content`, no
 - The selected permissions are bound to the one-time pairing code on Windows.
   Mobile clients cannot request or escalate permissions during exchange.
 - Only one unconsumed pairing code exists at a time. Generating another invalidates
-  the previous code.
+  the previous code. A generate attempt while sharing is not ready also invalidates
+  the previous code without creating a new one.
 - The code contains 192 random bits encoded as base64url without padding.
 - It expires after two minutes or one successful exchange.
 - QR URL format: `https://<selected-ip>:43127/pair#code=<code>`.
@@ -476,11 +477,12 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
 - Kestrel binds only to the selected IPv4 address and port.
 - A port conflict disables sharing and displays the owning-port diagnostic; the app
   does not silently choose another origin.
-- Network state is one of `NoEligibleInterface`, `SelectionRequired`,
-  `PublicProfileBlocked`, `PortConflict`, `Starting`, or `Running`.
+- Network state is one of `Shutdown`, `NoEligibleInterface`, `PublicProfileBlocked`,
+  `SelectionRequired`, `PortConflict`, `AuthorizationPersistenceFailed`, `Starting`,
+  or `Running`.
 - State priority is: shutdown in progress, `NoEligibleInterface`,
-  `PublicProfileBlocked`, `SelectionRequired`, `PortConflict`, `Starting`, then
-  `Running`.
+  `PublicProfileBlocked`, `SelectionRequired`, `PortConflict`,
+  `AuthorizationPersistenceFailed`, `Starting`, then `Running`.
 - One serialized `NetworkCoordinator` owns interface reevaluation and the complete
   stop-drain, authorization-revoke, bind, and start transition. Concurrent network
   change events are coalesced and reevaluated after the current transition.
@@ -809,6 +811,9 @@ Security-related UI uses precise wording:
 - Phone cannot connect: suggest checking same Wi-Fi, guest/client isolation, VPN,
   selected adapter, and Windows Firewall.
 - Pairing code expired or was consumed: generate a new QR code.
+- Pairing requested while sharing is not ready: no code is created, any unconsumed
+  code is invalidated, and a `Pairing code was not created` notification naming the
+  specific reason opens the tray window.
 - Session expired or revoked: clear the DOM and return to pairing.
 - Authorization file cannot be decrypted: fail closed and re-pair.
 - Clipboard remains busy after three retries: ignore the event and show a diagnostic

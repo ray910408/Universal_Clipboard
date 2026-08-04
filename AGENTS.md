@@ -4,8 +4,9 @@ Personal Windows-to-mobile text bridge (local-first MVP): copy on Windows, fetch
 
 ## Verify (run before any completion claim)
 - No global `dotnet` SDK on PATH — run `.\scripts\bootstrap.ps1` once, then use `.\.dotnet\dotnet.exe`.
-- `.\.dotnet\dotnet.exe build UniversalClipboard.slnx`
-- `.\.dotnet\dotnet.exe test UniversalClipboard.slnx` (covers `tests/UniversalClipboard.App.Tests` and `tests/UniversalClipboard.Core.Tests`)
+- `.\.dotnet\dotnet.exe build UniversalClipboard.slnx /p:NuGetAudit=false`
+- `.\.dotnet\dotnet.exe test UniversalClipboard.slnx /p:NuGetAudit=false` (covers `tests/UniversalClipboard.App.Tests` and `tests/UniversalClipboard.Core.Tests`)
+- `/p:NuGetAudit=false` matters: `TreatWarningsAsErrors` is on, so NuGet audit advisories fail a bare build.
 - Behavioral claims about clipboard/pairing flows need a manual run of the tray app — otherwise phrase as "implemented but NOT verified".
 
 ## Boundaries
