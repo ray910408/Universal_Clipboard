@@ -12,5 +12,6 @@ Personal Windows-to-mobile text bridge (local-first MVP): copy on Windows, fetch
 ## Boundaries
 - Local-first is a design decision: do not add cloud sync, external services, or telemetry unless explicitly requested.
 - Clipboard write-back must stay behind the explicit tray "Apply" action — never auto-apply received text.
+- The exe deliberately requests elevation to create/repair its `Universal Clipboard LAN` firewall rule and removes it on tray Exit. That privileged path is intentional; keep the manual `docs/firewall-setup.md` fallback working.
 - `.worktrees/`, `.agents/`, `artifacts/` are operational artifacts; leave them alone.
 - Note: this repo lives in the home directory (grandfathered); new sibling projects go in `C:\code\...`.
