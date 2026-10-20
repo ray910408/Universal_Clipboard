@@ -864,7 +864,7 @@ public sealed class ClipboardApplicationContext :
             NetworkSharingStatus.NoEligibleInterface =>
                 "No eligible private network interface is available. Connect to a private network before pairing.",
             NetworkSharingStatus.PublicProfileBlocked =>
-                "Windows reports this network as Public. Switch it to Private before pairing.",
+                BuildPublicProfileMessage(state, "pairing"),
             NetworkSharingStatus.PortConflict =>
                 $"TCP {state.Port} is already in use. Free the port and restart sharing before pairing.",
             NetworkSharingStatus.AuthorizationPersistenceFailed =>
@@ -1183,10 +1183,17 @@ public sealed class ClipboardApplicationContext :
         AuthorizationDuration selectedDuration) =>
         network.Status == NetworkSharingStatus.PublicProfileBlocked ||
         network.SelectedNetworkProfile == NetworkProfile.Public
-            ? "Windows reports this network as Public. Switch it to Private before sharing."
+            ? BuildPublicProfileMessage(network, "sharing")
             : selectedDuration == AuthorizationDuration.Permanent
                 ? "Permanent pairing is high risk. Revoke it when you no longer need this browser."
                 : null;
+
+    // While a Public LAN blocks sharing, the coordinator offers only Tailscale interfaces.
+    private static string BuildPublicProfileMessage(NetworkSharingState network, string action) =>
+        network.InterfaceOptions.IsDefaultOrEmpty
+            ? $"Windows reports this network as Public. Switch it to Private before {action}."
+            : "Windows reports this network as Public, so LAN sharing is blocked. " +
+              $"Tailscale is available: choose the Tailscale interface before {action}.";
 
     private static string BuildPairingUrl(string selectedUrl, string pairingCode)
     {

@@ -206,6 +206,67 @@ public sealed class NetworkCoordinatorTests
     }
 
     [Fact]
+    public async Task Public_lan_with_tailscale_offers_only_tailscale_and_does_not_start()
+    {
+        var fixture = new Fixture();
+        fixture.Environment.Interfaces =
+        [
+            Iface("wifi", "192.168.1.5", profile: NetworkProfile.Public),
+            Iface("eth", "10.0.0.5"),
+            TailscaleIface(),
+        ];
+
+        var blocked = await fixture.Coordinator.StartAsync();
+        var explicitLan = await fixture.Coordinator.SetSelectedInterfaceAsync("eth");
+
+        blocked.Status.Should().Be(NetworkSharingStatus.PublicProfileBlocked);
+        blocked.InterfaceOptions.Select(item => item.InterfaceId).Should().Equal("tailscale");
+        blocked.InterfaceOptions.Single().Address.Should().Be(IPAddress.Parse("100.101.102.103"));
+        explicitLan.Status.Should().Be(NetworkSharingStatus.PublicProfileBlocked);
+        fixture.Host.Starts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Public_lan_with_explicit_tailscale_selection_runs_on_tailnet_address_only()
+    {
+        var fixture = new Fixture();
+        fixture.Environment.Interfaces =
+        [
+            Iface("wifi", "192.168.1.5", profile: NetworkProfile.Public),
+            TailscaleIface(),
+        ];
+        await fixture.Coordinator.StartAsync();
+
+        var running = await fixture.Coordinator.SetSelectedInterfaceAsync("tailscale");
+        var refreshed = await fixture.Coordinator.RefreshAsync();
+
+        running.Status.Should().Be(NetworkSharingStatus.Running);
+        running.SelectedAddress.Should().Be(IPAddress.Parse("100.101.102.103"));
+        running.SelectedUrl.Should().Be("https://100.101.102.103:43127/");
+        running.SelectedNetworkProfile.Should().Be(NetworkProfile.Private);
+        refreshed.Status.Should().Be(NetworkSharingStatus.Running);
+        fixture.Host.Starts.Should().ContainSingle(
+            endpoint => endpoint.Address.Equals(IPAddress.Parse("100.101.102.103")) &&
+                        endpoint.Port == 43127);
+        fixture.Host.Starts.Should().NotContain(endpoint => endpoint.Address.Equals(IPAddress.Parse("192.168.1.5")));
+    }
+
+    [Fact]
+    public async Task Public_lan_without_tailscale_stays_blocked_even_when_explicitly_selected()
+    {
+        var fixture = new Fixture();
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5", profile: NetworkProfile.Public)];
+
+        var blocked = await fixture.Coordinator.StartAsync();
+        var explicitLan = await fixture.Coordinator.SetSelectedInterfaceAsync("wifi");
+
+        blocked.Status.Should().Be(NetworkSharingStatus.PublicProfileBlocked);
+        blocked.InterfaceOptions.Should().BeEmpty();
+        explicitLan.Status.Should().Be(NetworkSharingStatus.PublicProfileBlocked);
+        fixture.Host.Starts.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Refresh_events_are_serialized_and_coalesced()
     {
         var fixture = new Fixture();
@@ -907,6 +968,16 @@ public sealed class NetworkCoordinatorTests
             profile,
             [IPAddress.Parse(address)],
             HasDefaultGateway: true);
+
+    private static NetworkInterfaceState TailscaleIface() =>
+        new(
+            "tailscale",
+            "tailscale",
+            NetworkInterfaceKind.Other,
+            NetworkOperationalStatus.Up,
+            NetworkProfile.Private,
+            [IPAddress.Parse("100.101.102.103")],
+            HasDefaultGateway: false);
 
     private static FirewallRuleDefinition ExpectedFirewallDefinition() =>
         new(

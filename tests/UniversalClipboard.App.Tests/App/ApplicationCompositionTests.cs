@@ -1065,6 +1065,36 @@ public sealed class ApplicationCompositionTests
     }
 
     [Fact]
+    public void Public_profile_with_tailscale_explains_lan_block_and_offers_tailscale()
+    {
+        var fixture = new Fixture();
+        fixture.Sharing.State = new NetworkSharingState(
+            NetworkSharingStatus.PublicProfileBlocked,
+            null,
+            null,
+            null,
+            NetworkProfile.Public,
+            43127,
+            IsPortListening: false,
+            FirewallRuleStatus.Unknown,
+            null,
+            ImmutableArray.Create(
+                new NetworkInterfaceSelectionOption(
+                    "tailscale",
+                    "Tailscale",
+                    IPAddress.Parse("100.101.102.103"))));
+
+        fixture.Context.RefreshView();
+
+        fixture.Window.State.ServiceStatus.Should().Be("Blocked");
+        fixture.Window.State.InterfaceOptions.Select(item => item.DisplayName)
+            .Should().Equal("Tailscale - 100.101.102.103");
+        fixture.Window.State.BlockingWarning.Should().Be(
+            "Windows reports this network as Public, so LAN sharing is blocked. " +
+            "Tailscale is available: choose the Tailscale interface before sharing.");
+    }
+
+    [Fact]
     public void Permanent_duration_displays_high_risk_warning()
     {
         var fixture = new Fixture();

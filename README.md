@@ -162,6 +162,12 @@ tailnet:
 3. Pair as usual. The QR code and URL use the Tailscale address, for example
    `https://100.101.102.103:43127/`. This also works at home while Tailscale is on.
 
+On Public Wi-Fi (a café or hotel), Windows marks the Wi-Fi Public and LAN sharing stays
+blocked. If Tailscale is connected, the tray says so and offers only the Tailscale
+interface; choose it to share over the tailnet. Nothing listens on the Public Wi-Fi
+address: the app binds only the `100.x` address, and the firewall rule covers the
+Private profile only.
+
 Security notes:
 
 - Tailnet traffic is WireGuard-encrypted between your devices; Tailscale relays never
