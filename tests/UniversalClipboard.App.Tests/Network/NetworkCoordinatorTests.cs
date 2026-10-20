@@ -11,8 +11,21 @@ using UniversalClipboard.Core.Authorization;
 
 namespace UniversalClipboard.App.Tests.Network;
 
-public sealed class NetworkCoordinatorTests
+public sealed class NetworkCoordinatorTests : IDisposable
 {
+    private readonly string _directory =
+        Path.Combine(Path.GetTempPath(), "UniversalClipboard.Tests", Guid.NewGuid().ToString("N"));
+
+    private string ChoicePath => Path.Combine(_directory, "network-interface.v1.json");
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_directory))
+        {
+            Directory.Delete(_directory, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task State_priority_is_shutdown_noeligible_public_selection_port_starting_running()
     {
@@ -203,6 +216,74 @@ public sealed class NetworkCoordinatorTests
         resumed.SelectedAddress.Should().Be(IPAddress.Parse("192.168.1.5"));
         fixture.Events.Should().NotContain("auth:revoke-all");
         fixture.Host.Starts.Should().NotContain(endpoint => endpoint.Address.Equals(IPAddress.Parse("100.101.102.103")));
+    }
+
+    [Theory]
+    [InlineData("wifi", "192.168.1.5")]
+    [InlineData("tailscale", "100.101.102.103")]
+    public async Task Restart_restores_the_saved_interface_choice(string interfaceId, string address)
+    {
+        var first = new Fixture(choices: new NetworkInterfaceChoiceStore(ChoicePath));
+        first.Environment.Interfaces = [Iface("wifi", "192.168.1.5"), TailscaleIface()];
+        (await first.Coordinator.StartAsync()).Status.Should().Be(NetworkSharingStatus.SelectionRequired);
+        (await first.Coordinator.SetSelectedInterfaceAsync(interfaceId)).Status
+            .Should().Be(NetworkSharingStatus.Running);
+        await first.Coordinator.ShutdownAsync();
+
+        var restarted = new Fixture(choices: new NetworkInterfaceChoiceStore(ChoicePath));
+        restarted.Environment.Interfaces = [Iface("wifi", "192.168.1.5"), TailscaleIface()];
+        var state = await restarted.Coordinator.StartAsync();
+
+        state.Status.Should().Be(NetworkSharingStatus.Running);
+        state.SelectedInterfaceId.Should().Be(interfaceId);
+        state.SelectedAddress.Should().Be(IPAddress.Parse(address));
+    }
+
+    [Fact]
+    public async Task Saved_tailscale_choice_not_up_yet_pauses_instead_of_binding_the_lan()
+    {
+        new NetworkInterfaceChoiceStore(ChoicePath).Save(
+            new NetworkInterfaceChoice("tailscale", IsTailscale: true));
+        var fixture = new Fixture(choices: new NetworkInterfaceChoiceStore(ChoicePath));
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5")];
+
+        var paused = await fixture.Coordinator.StartAsync();
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5"), TailscaleIface()];
+        var resumed = await fixture.Coordinator.RefreshAsync();
+
+        paused.Status.Should().Be(NetworkSharingStatus.SelectionRequired);
+        paused.InterfaceOptions.Select(item => item.InterfaceId).Should().Equal("wifi");
+        resumed.Status.Should().Be(NetworkSharingStatus.Running);
+        resumed.SelectedAddress.Should().Be(IPAddress.Parse("100.101.102.103"));
+        fixture.Events.Should().Equal(
+            "auth:remove-stale:100.101.102.103",
+            "host:start:100.101.102.103:43127");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("not json")]
+    [InlineData("null")]
+    [InlineData("{\"InterfaceId\":42,\"IsTailscale\":true}")]
+    [InlineData("{\"InterfaceId\":\"\",\"IsTailscale\":true}")]
+    public async Task Missing_or_corrupt_choice_file_falls_back_to_unsaved_selection(string? contents)
+    {
+        if (contents is not null)
+        {
+            Directory.CreateDirectory(_directory);
+            File.WriteAllText(ChoicePath, contents);
+        }
+
+        var fixture = new Fixture(choices: new NetworkInterfaceChoiceStore(ChoicePath));
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5"), TailscaleIface()];
+        var unselected = await fixture.Coordinator.StartAsync();
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5")];
+        var autoSelected = await fixture.Coordinator.RefreshAsync();
+
+        unselected.Status.Should().Be(NetworkSharingStatus.SelectionRequired);
+        autoSelected.Status.Should().Be(NetworkSharingStatus.Running);
+        autoSelected.SelectedAddress.Should().Be(IPAddress.Parse("192.168.1.5"));
     }
 
     [Fact]
@@ -908,6 +989,16 @@ public sealed class NetworkCoordinatorTests
             [IPAddress.Parse(address)],
             HasDefaultGateway: true);
 
+    private static NetworkInterfaceState TailscaleIface() =>
+        new(
+            "tailscale",
+            "tailscale",
+            NetworkInterfaceKind.Other,
+            NetworkOperationalStatus.Up,
+            NetworkProfile.Private,
+            [IPAddress.Parse("100.101.102.103")],
+            HasDefaultGateway: false);
+
     private static FirewallRuleDefinition ExpectedFirewallDefinition() =>
         new(
             WindowsFirewallInspector.ExpectedRuleName,
@@ -948,7 +1039,9 @@ public sealed class NetworkCoordinatorTests
 
         public NetworkCoordinator Coordinator { get; }
 
-        public Fixture(IFirewallInspector? firewall = null)
+        public Fixture(
+            IFirewallInspector? firewall = null,
+            NetworkInterfaceChoiceStore? choices = null)
         {
             Environment = new FakeNetworkEnvironment();
             Host = new FakeHostController(Events);
@@ -959,7 +1052,8 @@ public sealed class NetworkCoordinatorTests
                 firewall ?? Firewall,
                 Host,
                 Pairing,
-                Authorization);
+                Authorization,
+                choices);
         }
     }
 
