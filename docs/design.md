@@ -478,6 +478,14 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
 - A user selection is retained by interface ID while that interface remains eligible
   and Private. The presence of additional eligible interfaces does not return a
   retained valid selection to `SelectionRequired`.
+- The selection survives restarts: once it resolves, its interface ID and whether it
+  is a Tailscale interface are saved as plain JSON at
+  `%LOCALAPPDATA%\UniversalClipboard\network-interface.v1.json` (an adapter ID is not
+  secret, so no DPAPI). A missing or corrupt file means no saved selection.
+- While a selected Tailscale interface is absent (for example, still starting at
+  sign-in), a lone LAN interface is not auto-selected; sharing stays in
+  `SelectionRequired` until Tailscale returns or the user picks the LAN. Binding the
+  LAN IP instead would drop every tailnet-bound pairing.
 - Kestrel binds only to the selected IPv4 address and port.
 - A port conflict disables sharing and displays the owning-port diagnostic; the app
   does not silently choose another origin.

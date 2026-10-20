@@ -1094,7 +1094,8 @@ public static class NetworkInterfaceSelector
 {
     public static NetworkSelectionResult Select(
         IReadOnlyList<NetworkInterfaceState> interfaces,
-        string? retainedExplicitInterfaceId)
+        string? retainedExplicitInterfaceId,
+        bool retainedIsTailscale = false)
     {
         ArgumentNullException.ThrowIfNull(interfaces);
         var eligible = interfaces
@@ -1128,7 +1129,9 @@ public static class NetworkInterfaceSelector
 
         // Tailscale is never auto-selected: an unattended switch onto the tailnet changes the
         // bound IP, which revokes every pairing, and tailnet exposure should be an explicit choice.
-        return eligible is [var only] && IsUsableLanInterface(only)
+        // Nor is a LAN interface while a retained Tailscale choice is down (e.g. still starting
+        // at sign-in): binding the LAN IP would drop every tailnet-bound pairing.
+        return !retainedIsTailscale && eligible is [var only] && IsUsableLanInterface(only)
             ? Selected(NetworkSelectionStatus.AutoSelected, eligible, only)
             : new NetworkSelectionResult(
                 NetworkSelectionStatus.SelectionRequired,

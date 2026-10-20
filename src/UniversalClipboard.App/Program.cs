@@ -115,7 +115,8 @@ internal static class Program
                     firewallRuleQuery),
                 hostController,
                 new PairingCodeInvalidator(pairingCodes),
-                authorization);
+                authorization,
+                new NetworkInterfaceChoiceStore());
 
             trayWindow = new TrayWindow();
             var sharing = new NetworkSharingController(network);
