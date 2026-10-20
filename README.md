@@ -157,8 +157,8 @@ tailnet:
 
 1. Install Tailscale on Windows and on the phone, signed in to the same tailnet.
 2. In the tray window, choose the Tailscale interface (its address starts with `100.`).
-   The app never picks Tailscale on its own, and the choice is not saved yet, so pick
-   it again after each app start.
+   The app never picks Tailscale on its own. Your choice is saved, so later app starts
+   reuse it; if Tailscale is not up yet, sharing waits for it instead of using the LAN.
 3. Pair as usual. The QR code and URL use the Tailscale address, for example
    `https://100.101.102.103:43127/`. This also works at home while Tailscale is on.
 
@@ -178,9 +178,9 @@ Security notes:
 - The app only answers requests from loopback, private LAN ranges, and
   `100.64.0.0/10`; the firewall rule allows `LocalSubnet` plus `100.64.0.0/10`.
 - Switching between the LAN and Tailscale interfaces while sharing changes the
-  selected IP, which revokes existing pairings. If Tailscale stops while selected and
-  one LAN interface is available, sharing falls back to the LAN and pairings are
-  revoked too. A LAN outage never moves sharing onto Tailscale; it pauses instead.
+  selected IP, which revokes existing pairings. Outages never switch sharing between
+  them: if the chosen Tailscale interface stops, sharing pauses until it returns (or
+  you choose the LAN), and a LAN outage never moves sharing onto Tailscale.
 - Tailscale must keep the Windows adapter on the Private profile (its default);
   otherwise the interface is not offered.
 

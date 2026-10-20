@@ -813,10 +813,12 @@ public sealed class NetworkCoordinator
     private readonly ILocalWebHostController _host;
     private readonly IPairingCodeInvalidator _pairingCodeInvalidator;
     private readonly IAuthorizationAdministration _authorization;
+    private readonly NetworkInterfaceChoiceStore? _choiceStore;
     private readonly object _coalesceGate = new();
     private Task<NetworkSharingState>? _activeEvaluation;
     private bool _evaluateAgain;
-    private string? _selectedInterfaceId;
+    private NetworkInterfaceChoice? _selectedInterface;
+    private NetworkInterfaceChoice? _savedInterface;
     private IPEndPoint? _runningEndpoint;
     private bool _shutdown = true;
     private long _lifecycleVersion;
@@ -828,7 +830,8 @@ public sealed class NetworkCoordinator
         IFirewallInspector firewall,
         ILocalWebHostController host,
         IPairingCodeInvalidator pairingCodeInvalidator,
-        IAuthorizationAdministration authorization)
+        IAuthorizationAdministration authorization,
+        NetworkInterfaceChoiceStore? choiceStore = null)
     {
         _environment = environment;
         _portProbe = portProbe;
@@ -836,6 +839,8 @@ public sealed class NetworkCoordinator
         _host = host;
         _pairingCodeInvalidator = pairingCodeInvalidator;
         _authorization = authorization;
+        _choiceStore = choiceStore;
+        _selectedInterface = _savedInterface = choiceStore?.Load();
     }
 
     public NetworkSharingState CurrentState => Volatile.Read(ref _currentState);
@@ -865,7 +870,8 @@ public sealed class NetworkCoordinator
         string interfaceId,
         CancellationToken cancellationToken = default)
     {
-        _selectedInterfaceId = interfaceId;
+        // The kind is learned once the ID resolves against a live interface (RememberChoice).
+        _selectedInterface = new NetworkInterfaceChoice(interfaceId, IsTailscale: false);
         Interlocked.Increment(ref _lifecycleVersion);
         return RefreshAsync(cancellationToken);
     }
@@ -927,11 +933,18 @@ public sealed class NetworkCoordinator
         // chose may still run: it binds just its 100.x address, which the Private-only firewall
         // rule covers, so nothing is exposed on the Public network.
         var publicLanBlocked = interfaces.Any(IsPublicProfileCandidate);
+        var choice = _selectedInterface;
         var selection = NetworkInterfaceSelector.Select(
             publicLanBlocked
                 ? interfaces.Where(item => !NetworkInterfaceSelector.IsUsableLanInterface(item)).ToArray()
                 : interfaces,
-            _selectedInterfaceId);
+            choice?.InterfaceId,
+            retainedIsTailscale: choice?.IsTailscale == true);
+        if (selection.Status == NetworkSelectionStatus.RetainedExplicitSelection)
+        {
+            RememberChoice(choice!, selection.Selected!);
+        }
+
         if (publicLanBlocked && selection.Status != NetworkSelectionStatus.RetainedExplicitSelection)
         {
             await StopRunningHostAndInvalidateAsync(cancellationToken).ConfigureAwait(false);
@@ -1088,6 +1101,23 @@ public sealed class NetworkCoordinator
 
         _runningEndpoint = endpoint;
         return Publish(RunningState(selected, address));
+    }
+
+    private void RememberChoice(NetworkInterfaceChoice choice, NetworkInterfaceState selected)
+    {
+        // An eligible interface that is not a LAN adapter qualified through its Tailscale address.
+        var resolved = choice with
+        {
+            IsTailscale = !NetworkInterfaceSelector.IsUsableLanInterface(selected),
+        };
+
+        // Skip if the user picked another interface while this evaluation ran.
+        if (Interlocked.CompareExchange(ref _selectedInterface, resolved, choice) == choice &&
+            resolved != _savedInterface)
+        {
+            _savedInterface = resolved;
+            _choiceStore?.Save(resolved);
+        }
     }
 
     private bool IsEvaluationCurrent(long lifecycleVersion) =>
