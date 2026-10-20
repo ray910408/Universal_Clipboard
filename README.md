@@ -32,7 +32,7 @@ Chrome uses the tray URL, for example `https://<LAN-IP>:43127/`.
 
 On launch, `UniversalClipboard.exe` checks the extracted runtime payload against
 its `.deps.json` runtime/native asset manifest, then checks for the required
-Private + LocalSubnet Windows Firewall rule and asks for elevation if it needs to
+Private + LocalSubnet/Tailscale Windows Firewall rule and asks for elevation if it needs to
 create or repair it. The same network must be Private and TCP port `43127` must be
 reachable from the phone. Normal Tray **Exit** removes the app-created firewall
 rule. If the phone cannot load the tray URL, use the manual firewall guidance in
@@ -44,7 +44,8 @@ certificate warning only on a trusted private LAN, and use the paired phone page
 ## Requirements
 
 - Windows PC on a trusted **Private** Ethernet or Wi-Fi network.
-- iPhone Safari or Android Chrome on the same LAN.
+- iPhone Safari or Android Chrome on the same LAN, or on the same Tailscale tailnet
+  (see [Away From Home (Tailscale)](#away-from-home-tailscale)).
 - TCP port `43127` reachable from the phone.
 - For source builds, .NET 10 SDK.
 
@@ -112,7 +113,7 @@ MVP; verify the source and checksums before running builds you did not create.
 For source development, `.\scripts\run.ps1` runs `scripts\bootstrap.ps1`, restores
 packages when needed, builds, and starts the tray app. The app can request
 elevation to manage its runtime firewall rule. To create the documented Private +
-LocalSubnet inbound firewall rule for TCP `43127` before launch, run from
+LocalSubnet/Tailscale inbound firewall rule for TCP `43127` before launch, run from
 **Administrator PowerShell**:
 
 ```powershell
@@ -132,7 +133,7 @@ the rule manually, run:
 2. Extract `UniversalClipboard-win-x64.zip`.
 3. Launch `UniversalClipboard.exe`.
 4. Approve the Windows elevation prompt if the app needs to create or repair the
-   Private + LocalSubnet firewall rule.
+   Private + LocalSubnet/Tailscale firewall rule.
 5. If multiple eligible LAN interfaces are shown, choose the one on the same network
    as the phone.
 6. Choose a pairing duration. The default is **5 hours**.
@@ -147,6 +148,35 @@ the rule manually, run:
     clipboard copy, use the selected textarea and long-press **Copy**.
 12. For Write-enabled pairings, use **Send to Windows** on the phone, then approve
     the pending incoming item from the Windows tray.
+
+## Away From Home (Tailscale)
+
+There is no cloud relay. To use the app when the phone is on another network (mobile
+data, a different Wi-Fi), put both devices on the same [Tailscale](https://tailscale.com)
+tailnet:
+
+1. Install Tailscale on Windows and on the phone, signed in to the same tailnet.
+2. In the tray window, choose the Tailscale interface (its address starts with `100.`).
+   The app never picks Tailscale on its own, and the choice is not saved yet, so pick
+   it again after each app start.
+3. Pair as usual. The QR code and URL use the Tailscale address, for example
+   `https://100.101.102.103:43127/`. This also works at home while Tailscale is on.
+
+Security notes:
+
+- Tailnet traffic is WireGuard-encrypted between your devices; Tailscale relays never
+  see clipboard content. The Tailscale coordination service does see device metadata.
+- Every device in the tailnet, plus anyone you share the PC with, can reach TCP
+  `43127`. Pairing is still required. To narrow it, add a Tailscale access rule that
+  allows only your phone to reach the PC on `tcp:43127`.
+- The app only answers requests from loopback, private LAN ranges, and
+  `100.64.0.0/10`; the firewall rule allows `LocalSubnet` plus `100.64.0.0/10`.
+- Switching between the LAN and Tailscale interfaces while sharing changes the
+  selected IP, which revokes existing pairings. If Tailscale stops while selected and
+  one LAN interface is available, sharing falls back to the LAN and pairings are
+  revoked too. A LAN outage never moves sharing onto Tailscale; it pauses instead.
+- Tailscale must keep the Windows adapter on the Private profile (its default);
+  otherwise the interface is not offered.
 
 ## Pairing Durations
 
@@ -210,9 +240,10 @@ Important limits:
 
 - **Tray says Public network**: switch the Windows network profile to Private.
 - **Phone cannot load the URL**: check same Wi-Fi, guest/client isolation, VPN, and
-  Windows Firewall.
+  Windows Firewall. Over Tailscale, check both devices show Connected and the tray
+  uses the Tailscale interface (`100.x` address).
 - **Firewall shows Unknown**: restart the app and approve elevation so it can
-  repair the exact Private + LocalSubnet rule with both `Name` and `DisplayName`
+  repair the exact Private + LocalSubnet/Tailscale rule with both `Name` and `DisplayName`
   set to `Universal Clipboard LAN`, or use
   [docs/firewall-setup.md](docs/firewall-setup.md) manually.
 - **Port conflict**: another process is listening on TCP `43127`; stop it before

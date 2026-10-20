@@ -177,6 +177,35 @@ public sealed class NetworkCoordinatorTests
     }
 
     [Fact]
+    public async Task Lan_outage_with_tailscale_present_pauses_instead_of_switching_and_revoking()
+    {
+        var fixture = new Fixture();
+        var tailscale = new NetworkInterfaceState(
+            "tailscale",
+            "tailscale",
+            NetworkInterfaceKind.Other,
+            NetworkOperationalStatus.Up,
+            NetworkProfile.Private,
+            [IPAddress.Parse("100.101.102.103")],
+            HasDefaultGateway: false);
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5"), tailscale];
+        await fixture.Coordinator.StartAsync();
+        (await fixture.Coordinator.SetSelectedInterfaceAsync("wifi")).Status
+            .Should().Be(NetworkSharingStatus.Running);
+
+        fixture.Environment.Interfaces = [tailscale];
+        var paused = await fixture.Coordinator.RefreshAsync();
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5"), tailscale];
+        var resumed = await fixture.Coordinator.RefreshAsync();
+
+        paused.Status.Should().Be(NetworkSharingStatus.SelectionRequired);
+        resumed.Status.Should().Be(NetworkSharingStatus.Running);
+        resumed.SelectedAddress.Should().Be(IPAddress.Parse("192.168.1.5"));
+        fixture.Events.Should().NotContain("auth:revoke-all");
+        fixture.Host.Starts.Should().NotContain(endpoint => endpoint.Address.Equals(IPAddress.Parse("100.101.102.103")));
+    }
+
+    [Fact]
     public async Task Refresh_events_are_serialized_and_coalesced()
     {
         var fixture = new Fixture();
@@ -273,7 +302,7 @@ public sealed class NetworkCoordinatorTests
                     FirewallRuleProtocol.Tcp,
                     LocalPort: 43127,
                     FirewallRuleProfile.Private,
-                    FirewallRemoteAddressScope.LocalSubnet),
+                    FirewallRemoteAddressScope.LocalSubnetAndTailscale),
                 new FirewallRuleSnapshot(
                     "Similar disabled",
                     "Similar disabled",
@@ -282,7 +311,7 @@ public sealed class NetworkCoordinatorTests
                     FirewallRuleProtocol.Tcp,
                     LocalPort: 43127,
                     FirewallRuleProfile.Private,
-                    FirewallRemoteAddressScope.LocalSubnet),
+                    FirewallRemoteAddressScope.LocalSubnetAndTailscale),
             ],
         };
 
@@ -331,15 +360,16 @@ public sealed class NetworkCoordinatorTests
     }
 
     [Theory]
-    [InlineData("unsafe-public", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Public, FirewallRemoteAddressScope.LocalSubnet)]
+    [InlineData("unsafe-public", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Public, FirewallRemoteAddressScope.LocalSubnetAndTailscale)]
     [InlineData("unsafe-any-remote", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.Any)]
-    [InlineData("wrong-name", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
-    [InlineData("disabled", false, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
-    [InlineData("wrong-action", true, FirewallRuleAction.Block, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
-    [InlineData("wrong-protocol", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Udp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
-    [InlineData("wrong-port", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43128, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
+    [InlineData("wrong-name", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnetAndTailscale)]
+    [InlineData("disabled", false, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnetAndTailscale)]
+    [InlineData("wrong-action", true, FirewallRuleAction.Block, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnetAndTailscale)]
+    [InlineData("wrong-protocol", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Udp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnetAndTailscale)]
+    [InlineData("wrong-port", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43128, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnetAndTailscale)]
+    [InlineData("legacy-local-subnet-only", true, FirewallRuleAction.Allow, FirewallRuleProtocol.Tcp, 43127, FirewallRuleProfile.Private, FirewallRemoteAddressScope.LocalSubnet)]
     public void Firewall_query_reports_unknown_for_non_exact_mobile_rule(
-        string name,
+        string caseName,
         bool isEnabled,
         FirewallRuleAction action,
         FirewallRuleProtocol protocol,
@@ -347,13 +377,15 @@ public sealed class NetworkCoordinatorTests
         FirewallRuleProfile profile,
         FirewallRemoteAddressScope remoteScope)
     {
+        // Only the "wrong-name" case changes the name, so every other case fails on its own field.
+        var ruleName = caseName == "wrong-name" ? caseName : WindowsFirewallInspector.ExpectedRuleName;
         var rules = new FakeFirewallRuleQuery
         {
             Rules =
             [
                 new FirewallRuleSnapshot(
-                    name,
-                    name,
+                    ruleName,
+                    ruleName,
                     isEnabled,
                     action,
                     protocol,
@@ -364,8 +396,10 @@ public sealed class NetworkCoordinatorTests
         };
 
         var inspector = new WindowsFirewallInspector(rules);
+        var manager = new WindowsFirewallRuleManager(rules, new FakeFirewallRuleEditor());
 
         inspector.Inspect(43127).Status.Should().Be(FirewallRuleStatus.Unknown);
+        manager.IsRuleReady(43127).Should().BeFalse();
     }
 
     [Fact]
@@ -540,7 +574,7 @@ public sealed class NetworkCoordinatorTests
                         Protocol: WindowsFirewallComRuleQuery.TcpProtocol,
                         LocalPorts: "43127,43128",
                         Profiles: WindowsFirewallComRuleQuery.PrivateProfile,
-                        RemoteAddresses: "LocalSubnet"),
+                        RemoteAddresses: "LocalSubnet,100.64.0.0/255.192.0.0"),
                 ]));
         var editor = new FakeFirewallRuleEditor();
         var manager = new WindowsFirewallRuleManager(query, editor);
@@ -580,7 +614,7 @@ public sealed class NetworkCoordinatorTests
         rule.Properties.Should().Contain(new KeyValuePair<string, object>(
             "Profiles",
             WindowsFirewallComRuleQuery.PrivateProfile));
-        rule.Properties.Should().Contain(new KeyValuePair<string, object>("RemoteAddresses", "LocalSubnet"));
+        rule.Properties.Should().Contain(new KeyValuePair<string, object>("RemoteAddresses", "LocalSubnet,100.64.0.0/255.192.0.0"));
         bridge.Released.Should().Equal(
             rule,
             bridge.RuleCollection,
@@ -654,7 +688,7 @@ public sealed class NetworkCoordinatorTests
                         Protocol: 6,
                         LocalPorts: "43127",
                         Profiles: WindowsFirewallComRuleQuery.PrivateProfile,
-                        RemoteAddresses: "LocalSubnet"),
+                        RemoteAddresses: "LocalSubnet,100.64.0.0/255.192.0.0"),
                 ]));
 
         var rule = query.GetRules().Single();
@@ -667,7 +701,54 @@ public sealed class NetworkCoordinatorTests
             FirewallRuleProtocol.Tcp,
             LocalPort: 43127,
             FirewallRuleProfile.Private,
-            FirewallRemoteAddressScope.LocalSubnet));
+            FirewallRemoteAddressScope.LocalSubnetAndTailscale));
+    }
+
+    [Theory]
+    [InlineData("LocalSubnet", FirewallRemoteAddressScope.LocalSubnet)]
+    [InlineData("LocalSubnet,100.64.0.0/255.192.0.0", FirewallRemoteAddressScope.LocalSubnetAndTailscale)]
+    [InlineData("100.64.0.0/255.192.0.0, localsubnet", FirewallRemoteAddressScope.LocalSubnetAndTailscale)]
+    [InlineData("*", FirewallRemoteAddressScope.Any)]
+    [InlineData("100.64.0.0/255.192.0.0", FirewallRemoteAddressScope.Other)]
+    [InlineData("LocalSubnet,100.64.0.0/255.192.0.0,8.8.8.8", FirewallRemoteAddressScope.Other)]
+    public void Com_firewall_rule_query_parses_remote_address_scope(
+        string remoteAddresses,
+        FirewallRemoteAddressScope expected)
+    {
+        var query = new WindowsFirewallComRuleQuery(
+            new FakeComFirewallRules(
+                [
+                    new ComFirewallRuleSnapshot(
+                        WindowsFirewallInspector.ExpectedRuleName,
+                        WindowsFirewallInspector.ExpectedRuleName,
+                        Enabled: true,
+                        Action: 1,
+                        Protocol: 6,
+                        LocalPorts: "43127",
+                        Profiles: WindowsFirewallComRuleQuery.PrivateProfile,
+                        RemoteAddresses: remoteAddresses),
+                ]));
+
+        query.GetRules().Single().RemoteAddressScope.Should().Be(expected);
+    }
+
+    [Fact]
+    public void Firewall_rule_manager_repairs_legacy_local_subnet_only_rule()
+    {
+        var query = new FakeFirewallRuleQuery
+        {
+            Rules = [ExpectedFirewallSnapshot() with { RemoteAddressScope = FirewallRemoteAddressScope.LocalSubnet }],
+        };
+        var editor = new FakeFirewallRuleEditor();
+        var manager = new WindowsFirewallRuleManager(query, editor);
+
+        new WindowsFirewallInspector(query).Inspect(43127).Status.Should().Be(FirewallRuleStatus.Unknown);
+        manager.IsRuleReady(43127).Should().BeFalse();
+
+        manager.EnsureRule(43127);
+
+        editor.RemovedRuleNames.Should().Equal(WindowsFirewallInspector.ExpectedRuleName);
+        editor.AddedRules.Should().ContainSingle().Which.Should().Be(ExpectedFirewallDefinition());
     }
 
     [Theory]
@@ -688,7 +769,7 @@ public sealed class NetworkCoordinatorTests
                             Protocol: 6,
                             LocalPorts: "43127",
                             Profiles: profileMask,
-                            RemoteAddresses: "LocalSubnet"),
+                            RemoteAddresses: "LocalSubnet,100.64.0.0/255.192.0.0"),
                     ])));
 
         inspector.Inspect(43127).Status.Should().Be(FirewallRuleStatus.Unknown);
@@ -836,7 +917,7 @@ public sealed class NetworkCoordinatorTests
             FirewallRuleProtocol.Tcp,
             LocalPort: 43127,
             FirewallRuleProfile.Private,
-            FirewallRemoteAddressScope.LocalSubnet);
+            FirewallRemoteAddressScope.LocalSubnetAndTailscale);
 
     private static FirewallRuleSnapshot ExpectedFirewallSnapshot() =>
         new(
@@ -847,7 +928,7 @@ public sealed class NetworkCoordinatorTests
             FirewallRuleProtocol.Tcp,
             LocalPort: 43127,
             FirewallRuleProfile.Private,
-            FirewallRemoteAddressScope.LocalSubnet);
+            FirewallRemoteAddressScope.LocalSubnetAndTailscale);
 
     private sealed class Fixture
     {

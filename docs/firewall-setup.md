@@ -1,7 +1,7 @@
 # Windows Firewall Setup
 
 Universal Clipboard listens on TCP port `43127` on one selected private LAN IPv4
-address. `UniversalClipboard.exe` manages the required Windows Firewall rule for
+address or Tailscale (`100.64.0.0/10`) address. `UniversalClipboard.exe` manages the required Windows Firewall rule for
 the normal runtime path: it asks for elevation on launch if it needs to create or
 repair the rule, and Tray **Exit** removes the rule during normal shutdown.
 
@@ -17,12 +17,13 @@ New-NetFirewallRule `
   -Protocol TCP `
   -LocalPort 43127 `
   -Profile Private `
-  -RemoteAddress LocalSubnet
+  -RemoteAddress LocalSubnet, 100.64.0.0/10
 ```
 
 The exact rule matters. The tray recognizes only a rule whose `Name` and
 `DisplayName` are both `Universal Clipboard LAN`, enabled, inbound allow, TCP,
-local port `43127`, Private profile, and `LocalSubnet` remote scope.
+local port `43127`, Private profile, and `LocalSubnet` plus `100.64.0.0/10`
+(Tailscale) remote scope.
 
 Do not create a Public-profile rule. If Windows reports the network as Public,
 change the network profile to Private first.
@@ -44,7 +45,8 @@ Expected values:
 - protocol: `TCP`
 - local port: `43127`
 - profile: `Private`
-- remote address: `LocalSubnet`
+- remote address: `LocalSubnet` and `100.64.0.0/255.192.0.0` (Windows shows the
+  Tailscale range in mask form)
 
 ## Remove
 
@@ -64,8 +66,9 @@ Remove-NetFirewallRule -Name "Universal Clipboard LAN"
 
 ## If Phone Still Cannot Connect
 
-- Confirm Windows and the phone are on the same private Wi-Fi or Ethernet LAN.
-- Disable VPN temporarily on either device.
+- Confirm Windows and the phone are on the same private Wi-Fi or Ethernet LAN, or
+  both connected to the same Tailscale tailnet.
+- Disable other VPNs temporarily on either device (Tailscale is supported).
 - Avoid guest Wi-Fi or client isolation.
 - Make sure the tray-selected adapter matches the phone network.
 - Confirm no other process is using TCP `43127`.

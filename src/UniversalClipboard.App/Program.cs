@@ -316,7 +316,7 @@ internal static class Program
         {
             ShowFirewallError(
                 "Windows Firewall rule was not configured.",
-                "Universal Clipboard needs an inbound Private + LocalSubnet TCP 43127 rule before the phone can connect.",
+                "Universal Clipboard needs an inbound Private + LocalSubnet/Tailscale TCP 43127 rule before the phone can connect.",
                 exception);
             return false;
         }

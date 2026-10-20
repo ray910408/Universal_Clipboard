@@ -1855,7 +1855,7 @@ public sealed class ApplicationCompositionTests
             FirewallRuleProtocol.Tcp,
             LocalPort: 43127,
             FirewallRuleProfile.Private,
-            FirewallRemoteAddressScope.LocalSubnet);
+            FirewallRemoteAddressScope.LocalSubnetAndTailscale);
 
     private static FirewallRuleSnapshot ExpectedFirewallSnapshot() =>
         new(
@@ -1866,7 +1866,7 @@ public sealed class ApplicationCompositionTests
             FirewallRuleProtocol.Tcp,
             LocalPort: 43127,
             FirewallRuleProfile.Private,
-            FirewallRemoteAddressScope.LocalSubnet);
+            FirewallRemoteAddressScope.LocalSubnetAndTailscale);
 
     private sealed class FirewallRuleQueryProbe : IFirewallRuleQuery
     {

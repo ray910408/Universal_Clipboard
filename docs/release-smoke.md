@@ -34,7 +34,7 @@ Expected result:
 ## Runtime Smoke Checks
 
 Launch the published binary on a trusted Private LAN. Approve the Windows
-elevation prompt if the app needs to create or repair its Private + LocalSubnet
+elevation prompt if the app needs to create or repair its Private + LocalSubnet/Tailscale
 firewall rule. Windows management remains in the Tray UI. iPhone Safari or
 Android Chrome uses the tray-reported LAN URL, for example
 `https://<LAN-IP>:43127/`.
@@ -58,7 +58,7 @@ Expected result:
       after validating its extracted `.deps.json` runtime/native payload;
 - [ ] launch creates or repairs exactly one enabled inbound allow rule whose
       `Name` and `DisplayName` are both `Universal Clipboard LAN`, for TCP
-      `43127`, Private profile, and `LocalSubnet` remote scope;
+      `43127`, Private profile, and `LocalSubnet,100.64.0.0/255.192.0.0` remote scope;
 - [ ] TCP listener appears on the tray-selected LAN IPv4 address and port `43127`;
 - [ ] `GET https://<LAN-IP>:43127/` returns `200`;
 - [ ] unpaired `GET https://<LAN-IP>:43127/clip-api/clips` returns `401`;
@@ -70,6 +70,9 @@ Expected result:
 - [ ] with sharing stopped from the tray, generating a pairing code produces no QR
       code, invalidates any previously generated code, opens the tray window, and
       shows a **Pairing code was not created** notification naming the reason;
+- [ ] with Tailscale connected, the tray does not auto-select the Tailscale
+      interface; after choosing it, a phone on mobile data with Tailscale gets `200`
+      from `GET https://<100.x-IP>:43127/`;
 - [ ] tray **Exit** removes the TCP listener;
 - [ ] tray **Exit** removes the `Universal Clipboard LAN` firewall rule.
 

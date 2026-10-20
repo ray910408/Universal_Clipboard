@@ -1126,8 +1126,10 @@ public static class NetworkInterfaceSelector
             }
         }
 
-        return eligible.Length == 1
-            ? Selected(NetworkSelectionStatus.AutoSelected, eligible, eligible[0])
+        // Tailscale is never auto-selected: an unattended switch onto the tailnet changes the
+        // bound IP, which revokes every pairing, and tailnet exposure should be an explicit choice.
+        return eligible is [var only] && IsUsableLanInterface(only)
+            ? Selected(NetworkSelectionStatus.AutoSelected, eligible, only)
             : new NetworkSelectionResult(
                 NetworkSelectionStatus.SelectionRequired,
                 eligible,
@@ -1136,9 +1138,18 @@ public static class NetworkInterfaceSelector
     }
 
     internal static bool IsEligiblePrivateInterface(NetworkInterfaceState item) =>
-        IsUsableLanInterface(item) &&
         item.Profile == NetworkProfile.Private &&
-        item.Ipv4Addresses.Any(IsPrivateIpv4);
+        FindEligibleIpv4(item) is not null;
+
+    // Physical LAN adapters keep the RFC 1918 + default-gateway contract. Any other
+    // non-loopback adapter qualifies only through a Tailscale address, which has no gateway.
+    private static IPAddress? FindEligibleIpv4(NetworkInterfaceState item) =>
+        item.OperationalStatus != NetworkOperationalStatus.Up ||
+        item.Kind == NetworkInterfaceKind.Loopback
+            ? null
+            : IsUsableLanInterface(item)
+                ? item.Ipv4Addresses.FirstOrDefault(IsPrivateIpv4)
+                : item.Ipv4Addresses.FirstOrDefault(IsTailscaleIpv4);
 
     internal static bool IsUsableLanInterface(NetworkInterfaceState item) =>
         item.OperationalStatus == NetworkOperationalStatus.Up &&
@@ -1159,12 +1170,18 @@ public static class NetworkInterfaceSelector
             bytes[0] == 172 && bytes[1] is >= 16 and <= 31;
     }
 
-    internal static IPAddress FirstPrivateIpv4(NetworkInterfaceState item) =>
-        item.Ipv4Addresses.First(IsPrivateIpv4);
+    // Tailscale assigns tailnet addresses from the CGNAT block 100.64.0.0/10.
+    internal static bool IsTailscaleIpv4(IPAddress address) =>
+        address.AddressFamily == AddressFamily.InterNetwork &&
+        address.GetAddressBytes() is [100, >= 64 and <= 127, _, _];
+
+    internal static IPAddress FirstEligibleIpv4(NetworkInterfaceState item) =>
+        FindEligibleIpv4(item) ??
+        throw new InvalidOperationException($"Interface '{item.Id}' has no eligible IPv4 address.");
 
     private static NetworkSelectionResult Selected(
         NetworkSelectionStatus status,
         ImmutableArray<NetworkInterfaceState> eligible,
         NetworkInterfaceState selected) =>
-        new(status, eligible, selected, FirstPrivateIpv4(selected));
+        new(status, eligible, selected, FirstEligibleIpv4(selected));
 }

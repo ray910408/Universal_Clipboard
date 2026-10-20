@@ -65,7 +65,8 @@ function Test-UniversalClipboardFirewallRule {
             [string]$Rule.Profile -eq 'Private' -and
             [string]$portFilter[0].Protocol -eq 'TCP' -and
             [string]$portFilter[0].LocalPort -eq '43127' -and
-            [string]$addressFilter[0].RemoteAddress -eq 'LocalSubnet'
+            # Windows reports the Tailscale range in mask form.
+            ((@($addressFilter[0].RemoteAddress) | Sort-Object) -join ',') -eq '100.64.0.0/255.192.0.0,LocalSubnet'
         )
     } catch {
         return $false
@@ -231,12 +232,12 @@ if ($ConfigureFirewall) {
             -Protocol TCP `
             -LocalPort 43127 `
             -Profile Private `
-            -RemoteAddress LocalSubnet | Out-Null
+            -RemoteAddress LocalSubnet, 100.64.0.0/10 | Out-Null
         Write-Info "Created firewall rule: $displayName"
     }
 } else {
     Write-Step 'Skipping script-level firewall changes'
-    Write-Info 'UniversalClipboard.exe will request elevation to create its runtime Private + LocalSubnet firewall rule.'
+    Write-Info 'UniversalClipboard.exe will request elevation to create its runtime Private + LocalSubnet/Tailscale firewall rule.'
     Write-Info 'To create the rule before launch instead, rerun from Administrator PowerShell:'
     Write-Info '.\scripts\run.ps1 -ConfigureFirewall'
 }
