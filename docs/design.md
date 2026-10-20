@@ -508,7 +508,7 @@ the required bundled files declared by its `.deps.json` runtime/native asset
 manifest, then manages one TCP 43127 inbound Windows Firewall rule named
 `Universal Clipboard LAN`. On launch, the app checks for a single exact rule whose
 `Name` and `DisplayName` are both `Universal Clipboard LAN`, restricted to the
-Private profile and LocalSubnet, asks for elevation if the rule is missing or
+Private profile and LocalSubnet plus the Tailscale range `100.64.0.0/10`, asks for elevation if the rule is missing or
 malformed, and creates a clean replacement. Normal Tray **Exit** removes matching
 rules even if exit cleanup fails before the WinForms message loop stops.
 Documentation keeps an administrator PowerShell fallback for denied elevation,

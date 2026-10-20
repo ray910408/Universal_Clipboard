@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using UniversalClipboard.App.Network;
 using UniversalClipboard.App.Security;
 using UniversalClipboard.Core.Authorization;
 using UniversalClipboard.Core.Clipboard;
@@ -284,6 +285,17 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
 
         try
         {
+            // Defense in depth behind the firewall rule: never serve public or unknown sources.
+            if (!IsAllowedSource(source))
+            {
+                await WriteErrorAsync(
+                    context,
+                    StatusCodes.Status403Forbidden,
+                    "forbidden",
+                    "The request source is not allowed.");
+                return;
+            }
+
             if (!HasExpectedHost(context.Request))
             {
                 await WriteErrorAsync(
@@ -1201,25 +1213,28 @@ public sealed class LocalWebHost : IAsyncDisposable, ILocalWebHostInstance
             X509KeyStorageFlags.UserKeySet);
     }
 
-    private static string GetCoarseSource(IPAddress? address)
+    internal static bool IsAllowedSource(string coarseSource) =>
+        coarseSource is "loopback" or "private" or "tailscale";
+
+    internal static string GetCoarseSource(IPAddress? address)
     {
         if (address is null)
         {
             return "unknown";
         }
 
-        if (IPAddress.IsLoopback(address))
+        if (address.IsIPv4MappedToIPv6)
         {
-            return "loopback";
+            address = address.MapToIPv4();
         }
 
-        var bytes = address.GetAddressBytes();
-        return bytes.Length == 4 &&
-            (bytes[0] == 10 ||
-             bytes[0] == 192 && bytes[1] == 168 ||
-             bytes[0] == 172 && bytes[1] is >= 16 and <= 31)
-            ? "private"
-            : "other";
+        return IPAddress.IsLoopback(address)
+            ? "loopback"
+            : NetworkInterfaceSelector.IsPrivateIpv4(address)
+                ? "private"
+                : NetworkInterfaceSelector.IsTailscaleIpv4(address)
+                    ? "tailscale"
+                    : "other";
     }
 
     private sealed class JsonClipResponseWriter : IClipResponseWriter

@@ -20,6 +20,25 @@ public sealed class LocalWebHostTests
     private static readonly IPEndPoint Endpoint = new(IPAddress.Loopback, 43127);
 
     [Theory]
+    [InlineData("127.0.0.1", true)]
+    [InlineData("192.168.1.20", true)]
+    [InlineData("10.0.0.20", true)]
+    [InlineData("172.16.0.20", true)]
+    [InlineData("100.64.0.1", true)]
+    [InlineData("100.127.255.254", true)]
+    [InlineData("::ffff:100.101.1.2", true)]
+    [InlineData("100.128.0.1", false)]
+    [InlineData("8.8.8.8", false)]
+    [InlineData("172.32.0.1", false)]
+    [InlineData(null, false)]
+    public void Request_source_policy_allows_only_loopback_lan_and_tailscale(string? address, bool allowed)
+    {
+        var source = LocalWebHost.GetCoarseSource(address is null ? null : IPAddress.Parse(address));
+
+        LocalWebHost.IsAllowedSource(source).Should().Be(allowed);
+    }
+
+    [Theory]
     [InlineData("/")]
     [InlineData("/pair")]
     [InlineData("/app.css")]

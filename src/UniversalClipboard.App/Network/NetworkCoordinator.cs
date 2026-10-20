@@ -113,6 +113,7 @@ public enum FirewallRuleProfile
 public enum FirewallRemoteAddressScope
 {
     LocalSubnet,
+    LocalSubnetAndTailscale,
     Any,
     Other,
 }
@@ -187,7 +188,7 @@ public sealed class WindowsFirewallRuleManager(
             FirewallRuleProtocol.Tcp,
             port,
             FirewallRuleProfile.Private,
-            FirewallRemoteAddressScope.LocalSubnet);
+            FirewallRemoteAddressScope.LocalSubnetAndTailscale);
 
     private void RemoveExpectedRules(IReadOnlyList<FirewallRuleSnapshot> rules)
     {
@@ -209,7 +210,7 @@ public sealed class WindowsFirewallRuleManager(
         rule.Protocol == FirewallRuleProtocol.Tcp &&
         rule.LocalPort == port &&
         rule.Profile == FirewallRuleProfile.Private &&
-        rule.RemoteAddressScope == FirewallRemoteAddressScope.LocalSubnet;
+        rule.RemoteAddressScope == FirewallRemoteAddressScope.LocalSubnetAndTailscale;
 }
 
 public sealed class WindowsFirewallInspector : IFirewallInspector
@@ -296,7 +297,7 @@ public sealed class WindowsFirewallInspector : IFirewallInspector
                 rule.Protocol == FirewallRuleProtocol.Tcp &&
                 rule.LocalPort == port &&
                 rule.Profile == FirewallRuleProfile.Private &&
-                rule.RemoteAddressScope == FirewallRemoteAddressScope.LocalSubnet);
+                rule.RemoteAddressScope == FirewallRemoteAddressScope.LocalSubnetAndTailscale);
             return new FirewallInspectionResult(
                 hasExactRule ? FirewallRuleStatus.ExactRuleFound : FirewallRuleStatus.Unknown);
         }
@@ -353,6 +354,7 @@ public sealed class WindowsFirewallComRuleQuery(IComFirewallRules rules) : IFire
     public const int BlockAction = 0;
     public const int TcpProtocol = 6;
     public const int UdpProtocol = 17;
+    public const string TailscaleRemoteAddress = "100.64.0.0/255.192.0.0";
 
     public IReadOnlyList<FirewallRuleSnapshot> GetRules() =>
         rules.GetRules()
@@ -373,11 +375,27 @@ public sealed class WindowsFirewallComRuleQuery(IComFirewallRules rules) : IFire
                 : rule.Profiles == PublicProfile
                     ? FirewallRuleProfile.Public
                     : FirewallRuleProfile.Any,
-            string.Equals(rule.RemoteAddresses, "LocalSubnet", StringComparison.OrdinalIgnoreCase)
-                ? FirewallRemoteAddressScope.LocalSubnet
-                : string.Equals(rule.RemoteAddresses, "*", StringComparison.Ordinal)
-                    ? FirewallRemoteAddressScope.Any
-                    : FirewallRemoteAddressScope.Other);
+            ParseRemoteAddressScope(rule.RemoteAddresses));
+    }
+
+    // Windows returns subnets in mask form ("100.64.0.0/255.192.0.0") regardless of how they were written.
+    private static FirewallRemoteAddressScope ParseRemoteAddressScope(string remoteAddresses)
+    {
+        var parts = remoteAddresses
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return parts switch
+        {
+            [var only] when only.Equals("LocalSubnet", StringComparison.OrdinalIgnoreCase) =>
+                FirewallRemoteAddressScope.LocalSubnet,
+            ["*"] => FirewallRemoteAddressScope.Any,
+            [var range, var subnet] when
+                range.Equals(TailscaleRemoteAddress, StringComparison.Ordinal) &&
+                subnet.Equals("LocalSubnet", StringComparison.OrdinalIgnoreCase) =>
+                FirewallRemoteAddressScope.LocalSubnetAndTailscale,
+            _ => FirewallRemoteAddressScope.Other,
+        };
     }
 
     private static int ParseSinglePort(string localPorts)
@@ -418,6 +436,7 @@ public sealed class WindowsFirewallComRuleQuery(IComFirewallRules rules) : IFire
         scope switch
         {
             FirewallRemoteAddressScope.LocalSubnet => "LocalSubnet",
+            FirewallRemoteAddressScope.LocalSubnetAndTailscale => $"LocalSubnet,{TailscaleRemoteAddress}",
             FirewallRemoteAddressScope.Any => "*",
             FirewallRemoteAddressScope.Other => throw new ArgumentOutOfRangeException(nameof(scope)),
             _ => throw new ArgumentOutOfRangeException(nameof(scope)),
@@ -1136,7 +1155,7 @@ public sealed class NetworkCoordinator
             .Select(item => new NetworkInterfaceSelectionOption(
                 item.Id,
                 item.Name,
-                NetworkInterfaceSelector.FirstPrivateIpv4(item)))
+                NetworkInterfaceSelector.FirstEligibleIpv4(item)))
             .ToImmutableArray();
 
     private static bool IsHostStartPortConflict(Exception exception) =>

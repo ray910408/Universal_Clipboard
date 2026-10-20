@@ -52,7 +52,8 @@ public sealed class ProjectShapeTests
         runScript.Should().Contain("-Name $displayName");
         runScript.Should().Contain("-DisplayName $displayName");
         runScript.Should().Contain("-Profile Private");
-        runScript.Should().Contain("-RemoteAddress LocalSubnet");
+        runScript.Should().Contain("-RemoteAddress LocalSubnet, 100.64.0.0/10");
+        runScript.Should().Contain("-eq '100.64.0.0/255.192.0.0,LocalSubnet'");
 
         removeScript.Should().Contain("Get-NetFirewallRule -Name $DisplayName");
         removeScript.Should().Contain("Get-NetFirewallRule -DisplayName $DisplayName");
