@@ -77,14 +77,19 @@ public sealed class NetworkInterfaceSelectorTests
     [InlineData(NetworkInterfaceKind.Other)]
     [InlineData(NetworkInterfaceKind.Tunnel)]
     [InlineData(NetworkInterfaceKind.Ethernet)]
-    public void Private_tailscale_adapter_without_gateway_is_eligible(NetworkInterfaceKind kind)
+    public void Private_tailscale_adapter_is_eligible_but_only_used_when_explicitly_selected(
+        NetworkInterfaceKind kind)
     {
-        var result = NetworkInterfaceSelector.Select(
-            [Iface("tailscale", kind, IPAddress.Parse("100.101.102.103"), hasGateway: false)],
-            retainedExplicitInterfaceId: null);
+        IReadOnlyList<NetworkInterfaceState> interfaces =
+            [Iface("tailscale", kind, IPAddress.Parse("100.101.102.103"), hasGateway: false)];
 
-        result.Status.Should().Be(NetworkSelectionStatus.AutoSelected);
-        result.SelectedAddress.Should().Be(IPAddress.Parse("100.101.102.103"));
+        var unselected = NetworkInterfaceSelector.Select(interfaces, retainedExplicitInterfaceId: null);
+        var selected = NetworkInterfaceSelector.Select(interfaces, retainedExplicitInterfaceId: "tailscale");
+
+        unselected.Status.Should().Be(NetworkSelectionStatus.SelectionRequired);
+        unselected.EligibleInterfaces.Select(item => item.Id).Should().Equal("tailscale");
+        selected.Status.Should().Be(NetworkSelectionStatus.RetainedExplicitSelection);
+        selected.SelectedAddress.Should().Be(IPAddress.Parse("100.101.102.103"));
     }
 
     [Fact]

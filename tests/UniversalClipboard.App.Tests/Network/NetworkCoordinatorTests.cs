@@ -177,6 +177,35 @@ public sealed class NetworkCoordinatorTests
     }
 
     [Fact]
+    public async Task Lan_outage_with_tailscale_present_pauses_instead_of_switching_and_revoking()
+    {
+        var fixture = new Fixture();
+        var tailscale = new NetworkInterfaceState(
+            "tailscale",
+            "tailscale",
+            NetworkInterfaceKind.Other,
+            NetworkOperationalStatus.Up,
+            NetworkProfile.Private,
+            [IPAddress.Parse("100.101.102.103")],
+            HasDefaultGateway: false);
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5"), tailscale];
+        await fixture.Coordinator.StartAsync();
+        (await fixture.Coordinator.SetSelectedInterfaceAsync("wifi")).Status
+            .Should().Be(NetworkSharingStatus.Running);
+
+        fixture.Environment.Interfaces = [tailscale];
+        var paused = await fixture.Coordinator.RefreshAsync();
+        fixture.Environment.Interfaces = [Iface("wifi", "192.168.1.5"), tailscale];
+        var resumed = await fixture.Coordinator.RefreshAsync();
+
+        paused.Status.Should().Be(NetworkSharingStatus.SelectionRequired);
+        resumed.Status.Should().Be(NetworkSharingStatus.Running);
+        resumed.SelectedAddress.Should().Be(IPAddress.Parse("192.168.1.5"));
+        fixture.Events.Should().NotContain("auth:revoke-all");
+        fixture.Host.Starts.Should().NotContain(endpoint => endpoint.Address.Equals(IPAddress.Parse("100.101.102.103")));
+    }
+
+    [Fact]
     public async Task Refresh_events_are_serialized_and_coalesced()
     {
         var fixture = new Fixture();

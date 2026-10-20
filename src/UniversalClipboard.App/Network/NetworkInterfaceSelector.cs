@@ -1126,8 +1126,10 @@ public static class NetworkInterfaceSelector
             }
         }
 
-        return eligible.Length == 1
-            ? Selected(NetworkSelectionStatus.AutoSelected, eligible, eligible[0])
+        // Tailscale is never auto-selected: an unattended switch onto the tailnet changes the
+        // bound IP, which revokes every pairing, and tailnet exposure should be an explicit choice.
+        return eligible is [var only] && IsUsableLanInterface(only)
+            ? Selected(NetworkSelectionStatus.AutoSelected, eligible, only)
             : new NetworkSelectionResult(
                 NetworkSelectionStatus.SelectionRequired,
                 eligible,

@@ -70,6 +70,9 @@ Expected result:
 - [ ] with sharing stopped from the tray, generating a pairing code produces no QR
       code, invalidates any previously generated code, opens the tray window, and
       shows a **Pairing code was not created** notification naming the reason;
+- [ ] with Tailscale connected, the tray does not auto-select the Tailscale
+      interface; after choosing it, a phone on mobile data with Tailscale gets `200`
+      from `GET https://<100.x-IP>:43127/`;
 - [ ] tray **Exit** removes the TCP listener;
 - [ ] tray **Exit** removes the `Universal Clipboard LAN` firewall rule.
 

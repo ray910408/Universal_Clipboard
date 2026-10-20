@@ -468,7 +468,11 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
 - Eligible interfaces are operational Ethernet or Wi-Fi interfaces with a private
   IPv4 address and a default gateway. Loopback, tunnel, and interfaces without a
   gateway are excluded by default.
-- If exactly one interface is eligible, it is selected automatically.
+- A non-loopback Private adapter with a Tailscale address (`100.64.0.0/10`) is also
+  eligible, without a gateway. It is never auto-selected: the user must pick it, so a
+  LAN outage pauses sharing instead of moving it onto the tailnet and revoking
+  pairings.
+- If exactly one LAN interface is eligible, it is selected automatically.
 - If multiple interfaces are eligible, sharing remains paused until the user selects
   one in the tray.
 - A user selection is retained by interface ID while that interface remains eligible
@@ -491,7 +495,7 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
 - Re-evaluation with no eligible interface, multiple eligible interfaces, or a
   Public network enters the corresponding paused state, except that a retained valid
   interface selection resolves the multiple-interface case.
-- Re-evaluation with exactly one eligible Private interface attempts `Starting`.
+- Re-evaluation with exactly one eligible Private LAN interface attempts `Starting`.
 - Any selected IPv4 address change revokes all authorizations through the write-through
   coordinator before the host starts on the new address. Re-pairing is required. If
   revocation cannot be persisted, sharing remains paused.
