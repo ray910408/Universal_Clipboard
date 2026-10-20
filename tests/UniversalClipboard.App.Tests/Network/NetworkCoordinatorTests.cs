@@ -333,6 +333,26 @@ public sealed class NetworkCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Public_lan_restart_reuses_saved_tailscale_choice_on_tailnet_address_only()
+    {
+        new NetworkInterfaceChoiceStore(ChoicePath).Save(
+            new NetworkInterfaceChoice("tailscale", IsTailscale: true));
+        var fixture = new Fixture(choices: new NetworkInterfaceChoiceStore(ChoicePath));
+        fixture.Environment.Interfaces =
+        [
+            Iface("wifi", "192.168.1.5", profile: NetworkProfile.Public),
+            TailscaleIface(),
+        ];
+
+        var state = await fixture.Coordinator.StartAsync();
+
+        state.Status.Should().Be(NetworkSharingStatus.Running);
+        state.SelectedAddress.Should().Be(IPAddress.Parse("100.101.102.103"));
+        fixture.Host.Starts.Should().ContainSingle(
+            endpoint => endpoint.Address.Equals(IPAddress.Parse("100.101.102.103")));
+    }
+
+    [Fact]
     public async Task Public_lan_without_tailscale_stays_blocked_even_when_explicitly_selected()
     {
         var fixture = new Fixture();

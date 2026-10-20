@@ -474,8 +474,8 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
   pairings.
 - A Public LAN adapter with a private IPv4 address blocks every LAN adapter
   (`PublicProfileBlocked`). If a Private Tailscale interface is eligible, the blocked
-  state offers only Tailscale interfaces, and an explicit Tailscale selection runs on
-  its `100.x` address despite the Public LAN. It is still never auto-selected; with no
+  state offers only Tailscale interfaces, and an explicit Tailscale selection (including
+  a saved one) runs on its `100.x` address despite the Public LAN. It is still never auto-selected; with no
   Tailscale interface the block is unchanged. The Public adapter's address is never
   bound, and the Private-only firewall rule does not cover it.
 - If exactly one LAN interface is eligible, it is selected automatically.

@@ -164,7 +164,8 @@ tailnet:
 
 On Public Wi-Fi (a café or hotel), Windows marks the Wi-Fi Public and LAN sharing stays
 blocked. If Tailscale is connected, the tray says so and offers only the Tailscale
-interface; choose it to share over the tailnet. Nothing listens on the Public Wi-Fi
+interface; choose it to share over the tailnet (a saved Tailscale choice is reused
+automatically). Nothing listens on the Public Wi-Fi
 address: the app binds only the `100.x` address, and the firewall rule covers the
 Private profile only.
 
