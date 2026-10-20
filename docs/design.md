@@ -472,6 +472,12 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
   eligible, without a gateway. It is never auto-selected: the user must pick it, so a
   LAN outage pauses sharing instead of moving it onto the tailnet and revoking
   pairings.
+- A Public LAN adapter with a private IPv4 address blocks every LAN adapter
+  (`PublicProfileBlocked`). If a Private Tailscale interface is eligible, the blocked
+  state offers only Tailscale interfaces, and an explicit Tailscale selection (including
+  a saved one) runs on its `100.x` address despite the Public LAN. It is still never auto-selected; with no
+  Tailscale interface the block is unchanged. The Public adapter's address is never
+  bound, and the Private-only firewall rule does not cover it.
 - If exactly one LAN interface is eligible, it is selected automatically.
 - If multiple interfaces are eligible, sharing remains paused until the user selects
   one in the tray.
@@ -502,7 +508,8 @@ first certificate acceptance, browser compromise, or the person viewing the QR c
   host, and invalidates active pairing codes.
 - Re-evaluation with no eligible interface, multiple eligible interfaces, or a
   Public network enters the corresponding paused state, except that a retained valid
-  interface selection resolves the multiple-interface case.
+  interface selection resolves the multiple-interface case, and a retained Tailscale
+  selection resolves the Public-network case.
 - Re-evaluation with exactly one eligible Private LAN interface attempts `Starting`.
 - Any selected IPv4 address change revokes all authorizations through the write-through
   coordinator before the host starts on the new address. Re-pairing is required. If

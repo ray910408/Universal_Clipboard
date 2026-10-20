@@ -929,7 +929,23 @@ public sealed class NetworkCoordinator
             return await StopStaleEvaluationAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        if (interfaces.Any(IsPublicProfileCandidate))
+        // A Public LAN blocks every LAN adapter. Only a Tailscale interface the user explicitly
+        // chose may still run: it binds just its 100.x address, which the Private-only firewall
+        // rule covers, so nothing is exposed on the Public network.
+        var publicLanBlocked = interfaces.Any(IsPublicProfileCandidate);
+        var choice = _selectedInterface;
+        var selection = NetworkInterfaceSelector.Select(
+            publicLanBlocked
+                ? interfaces.Where(item => !NetworkInterfaceSelector.IsUsableLanInterface(item)).ToArray()
+                : interfaces,
+            choice?.InterfaceId,
+            retainedIsTailscale: choice?.IsTailscale == true);
+        if (selection.Status == NetworkSelectionStatus.RetainedExplicitSelection)
+        {
+            RememberChoice(choice!, selection.Selected!);
+        }
+
+        if (publicLanBlocked && selection.Status != NetworkSelectionStatus.RetainedExplicitSelection)
         {
             await StopRunningHostAndInvalidateAsync(cancellationToken).ConfigureAwait(false);
             return Publish(new NetworkSharingState(
@@ -941,17 +957,8 @@ public sealed class NetworkCoordinator
                 LocalWebHost.Port,
                 IsPortListening: false,
                 _firewall.Inspect(LocalWebHost.Port).Status,
-                null));
-        }
-
-        var choice = _selectedInterface;
-        var selection = NetworkInterfaceSelector.Select(
-            interfaces,
-            choice?.InterfaceId,
-            retainedIsTailscale: choice?.IsTailscale == true);
-        if (selection.Status == NetworkSelectionStatus.RetainedExplicitSelection)
-        {
-            RememberChoice(choice!, selection.Selected!);
+                null,
+                ToInterfaceOptions(selection.EligibleInterfaces)));
         }
 
         if (selection.Status == NetworkSelectionStatus.NoEligibleInterface)
