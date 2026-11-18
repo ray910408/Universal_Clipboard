@@ -351,6 +351,15 @@ public sealed class SensitiveTextClassifier
             var valueEnd = valueStart;
             while (valueEnd < text.Length && IsValueCharacter(text[valueEnd], quote))
             {
+                // Inside quotes a backslash escapes the next character, so \" does not end the value.
+                if (quote != '\0'
+                    && text[valueEnd] == '\\'
+                    && valueEnd + 1 < text.Length
+                    && text[valueEnd + 1] is >= '!' and <= '~')
+                {
+                    valueEnd++;
+                }
+
                 valueEnd++;
             }
 

@@ -207,6 +207,7 @@ public sealed class SensitiveTextClassifierTests
             $"api_key = {Scrambled(SensitiveTextClassifier.MinSecretValueLength)}",
             "{\"password\":\"Ab9!Cd8@Ef7&Gh6#Ij5\"}",
             "db_password = 'Xy7&Zq3:Wv9=Rt5;Pm2'",
+            """{"password":"Ab9\"Cd8@Ef7&Gh6#Ij5"}""",
         };
 
     [Theory]
@@ -252,6 +253,7 @@ public sealed class SensitiveTextClassifierTests
     [InlineData("key: ")]
     [InlineData("key=\"")]
     [InlineData("key=\"key='key=`")]
+    [InlineData("key=\"\\\"")]
     [InlineData("xoxb-")]
     [InlineData("AIza")]
     public void Classify_scans_repeated_candidate_prefixes_in_linear_time(string unit)
