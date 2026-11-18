@@ -205,6 +205,8 @@ public sealed class SensitiveTextClassifierTests
             $"'signing_secret' => '{Scrambled(30)}',",
             $"金鑰：x-api-key: {Scrambled(36)}",
             $"api_key = {Scrambled(SensitiveTextClassifier.MinSecretValueLength)}",
+            "{\"password\":\"Ab9!Cd8@Ef7&Gh6#Ij5\"}",
+            "db_password = 'Xy7&Zq3:Wv9=Rt5;Pm2'",
         };
 
     [Theory]
@@ -231,6 +233,8 @@ public sealed class SensitiveTextClassifierTests
             "auth_id: 550e8400-e29b-41d4-a716-446655440000",
             "PWD=/home/kenneth/projects/app2",
             "token = getAccessToken(request)",
+            "\"auth_message\": \"Please Sign In With Your Account 2024\"",
+            "api_key = \"aaaaaaaa&AAAA:1111=aaaa\"",
             "金鑰說明：今天下午三點在會議室開會討論專案進度與上線時程",
         };
 
@@ -246,6 +250,8 @@ public sealed class SensitiveTextClassifierTests
     [InlineData("sk-")]
     [InlineData("key=")]
     [InlineData("key: ")]
+    [InlineData("key=\"")]
+    [InlineData("key=\"key='key=`")]
     [InlineData("xoxb-")]
     [InlineData("AIza")]
     public void Classify_scans_repeated_candidate_prefixes_in_linear_time(string unit)

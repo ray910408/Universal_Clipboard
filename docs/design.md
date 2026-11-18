@@ -317,7 +317,9 @@ high-confidence MVP rules:
 - JWTs: three base64url segments where the header and payload both start with the
   encoded `{"` prefix and the signature has at least 16 characters.
 - Keyword plus entropy: a value after `=` or `:` whose name contains `key`, `secret`,
-  `token`, `passw`, `pwd`, `credential`, or `auth` (but not `public`). The value must
+  `token`, `passw`, `pwd`, `credential`, or `auth` (but not `public`). A quoted value
+  runs to its matching quote, so punctuation inside it counts; an unquoted value stops
+  at whitespace and common delimiters such as `&`, `;`, `=`, or `:`. The value must
   be printable ASCII, at least 16 characters, mix upper case, lower case, and digits
   (or be hex with a digit and a letter), and have Shannon entropy of at least 0.75 of
   `log2(min(length, alphabet))`, where the alphabet is 16 for hex and 64 otherwise.

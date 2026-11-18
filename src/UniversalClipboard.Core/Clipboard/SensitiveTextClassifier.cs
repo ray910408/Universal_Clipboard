@@ -337,7 +337,9 @@ public sealed class SensitiveTextClassifier
 
     private static bool ContainsKeywordHighEntropyValue(string text)
     {
-        // '=' and ':' end every value, so value spans never overlap and the scan stays linear.
+        // Unquoted values end at '=' and ':'; quoted values end at their own quote character.
+        // So unquoted spans never overlap and each character sits in at most one quoted span
+        // per quote kind, which keeps the scan linear.
         for (var index = 0; index < text.Length; index++)
         {
             if (text[index] is not ('=' or ':') || !HasSecretName(text, index))
@@ -345,9 +347,9 @@ public sealed class SensitiveTextClassifier
                 continue;
             }
 
-            var valueStart = SkipValuePrefix(text, index + 1);
+            var valueStart = SkipValuePrefix(text, index + 1, out var quote);
             var valueEnd = valueStart;
-            while (valueEnd < text.Length && IsValueCharacter(text[valueEnd]))
+            while (valueEnd < text.Length && IsValueCharacter(text[valueEnd], quote))
             {
                 valueEnd++;
             }
@@ -397,7 +399,7 @@ public sealed class SensitiveTextClassifier
         return false;
     }
 
-    private static int SkipValuePrefix(string text, int index)
+    private static int SkipValuePrefix(string text, int index, out char quote)
     {
         // Covers "a = b", "a := b", "a => b", and quoted values.
         while (index < text.Length && text[index] is ' ' or '\t' or '=' or '>')
@@ -405,8 +407,10 @@ public sealed class SensitiveTextClassifier
             index++;
         }
 
+        quote = '\0';
         if (index < text.Length && text[index] is '"' or '\'' or '`')
         {
+            quote = text[index];
             index++;
         }
 
@@ -469,11 +473,14 @@ public sealed class SensitiveTextClassifier
     private static bool IsSecretNameCharacter(char value) =>
         IsAsciiAlphaNumeric(value) || value is '_' or '-' or '.';
 
-    // Printable ASCII only, so CJK text and whitespace end a value.
-    private static bool IsValueCharacter(char value) =>
+    // Printable ASCII only, so CJK text and whitespace end a value. Inside quotes, punctuation
+    // belongs to the secret and only the matching quote ends it.
+    private static bool IsValueCharacter(char value, char quote) =>
         value is >= '!' and <= '~'
-            and not ('"' or '\'' or '`' or ',' or ';' or '&' or '(' or ')' or '[' or ']'
-                or '{' or '}' or '<' or '>' or '=' or ':');
+        && (quote != '\0'
+            ? value != quote
+            : value is not ('"' or '\'' or '`' or ',' or ';' or '&' or '(' or ')' or '[' or ']'
+                or '{' or '}' or '<' or '>' or '=' or ':'));
 
     private static bool IsGitHubKind(char value) =>
         value is 'p' or 'o' or 'u' or 's' or 'r';
