@@ -5,6 +5,17 @@ public sealed class SensitiveTextClassifier
     public const string PemPrivateKeyRule = "pem-private-key";
     public const string GitHubTokenRule = "github-token";
     public const string AwsAccessKeyRule = "aws-access-key";
+    public const string SlackTokenRule = "slack-token";
+    public const string StripeKeyRule = "stripe-key";
+    public const string GoogleApiKeyRule = "google-api-key";
+    public const string SkApiKeyRule = "sk-api-key";
+    public const string JwtRule = "jwt";
+    public const string KeywordHighEntropyRule = "keyword-high-entropy";
+
+    public const int MinSecretValueLength = 16;
+    public const double MinEntropyRatio = 0.75;
+
+    private const int MaxSecretNameLength = 64;
 
     private static readonly string[] PemTypes =
     [
@@ -13,7 +24,19 @@ public sealed class SensitiveTextClassifier
         "EC PRIVATE KEY",
         "DSA PRIVATE KEY",
         "OPENSSH PRIVATE KEY",
+        "ENCRYPTED PRIVATE KEY",
+        "PGP PRIVATE KEY BLOCK",
     ];
+
+    private static readonly string[] SlackPrefixes =
+        ["xoxb-", "xoxp-", "xoxa-", "xoxr-", "xoxs-", "xoxe-"];
+
+    private static readonly string[] StripePrefixes = ["sk_live_", "rk_live_"];
+
+    private static readonly string[] SecretNameKeywords =
+        ["key", "secret", "token", "passw", "pwd", "credential", "auth"];
+
+    private static readonly string[] AuthorizationSchemes = ["Bearer ", "Basic "];
 
     public string? Classify(string text)
     {
@@ -29,7 +52,38 @@ public sealed class SensitiveTextClassifier
             return GitHubTokenRule;
         }
 
-        return ContainsAwsAccessKey(text) ? AwsAccessKeyRule : null;
+        if (ContainsAwsAccessKey(text))
+        {
+            return AwsAccessKeyRule;
+        }
+
+        if (ContainsAnyPrefixedToken(text, SlackPrefixes, 20, 255, requireDigit: true, requireMixedCase: false))
+        {
+            return SlackTokenRule;
+        }
+
+        if (ContainsAnyPrefixedToken(text, StripePrefixes, 24, 255, requireDigit: false, requireMixedCase: false))
+        {
+            return StripeKeyRule;
+        }
+
+        if (ContainsPrefixedToken(text, "AIza", 35, 35, requireDigit: false, requireMixedCase: false))
+        {
+            return GoogleApiKeyRule;
+        }
+
+        // "sk-" also appears inside ordinary words ("task-"), so demand a random-looking payload.
+        if (ContainsPrefixedToken(text, "sk-", 32, 512, requireDigit: true, requireMixedCase: true))
+        {
+            return SkApiKeyRule;
+        }
+
+        if (ContainsJwt(text))
+        {
+            return JwtRule;
+        }
+
+        return ContainsKeywordHighEntropyValue(text) ? KeywordHighEntropyRule : null;
     }
 
     private static bool ContainsPemPrivateKey(string text)
@@ -174,6 +228,268 @@ public sealed class SensitiveTextClassifier
 
         return false;
     }
+
+    private static bool ContainsAnyPrefixedToken(
+        string text,
+        string[] prefixes,
+        int minLength,
+        int maxLength,
+        bool requireDigit,
+        bool requireMixedCase)
+    {
+        foreach (var prefix in prefixes)
+        {
+            if (ContainsPrefixedToken(text, prefix, minLength, maxLength, requireDigit, requireMixedCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsPrefixedToken(
+        string text,
+        string prefix,
+        int minLength,
+        int maxLength,
+        bool requireDigit,
+        bool requireMixedCase)
+    {
+        var index = text.IndexOf(prefix, StringComparison.Ordinal);
+        while (index >= 0)
+        {
+            var payloadStart = index + prefix.Length;
+            var payloadEnd = payloadStart;
+            while (payloadEnd < text.Length && IsTokenCharacter(text[payloadEnd]))
+            {
+                payloadEnd++;
+            }
+
+            var payload = text.AsSpan(payloadStart, payloadEnd - payloadStart);
+            if ((index == 0 || !IsTokenCharacter(text[index - 1]))
+                && payload.Length >= minLength
+                && payload.Length <= maxLength
+                && (!requireDigit || payload.ContainsAnyInRange('0', '9'))
+                && (!requireMixedCase
+                    || (payload.ContainsAnyInRange('A', 'Z') && payload.ContainsAnyInRange('a', 'z'))))
+            {
+                return true;
+            }
+
+            // Every later prefix inside this payload is preceded by a token character,
+            // so it cannot pass the boundary check; skipping keeps the scan linear.
+            index = text.IndexOf(prefix, Math.Max(payloadEnd, index + 1), StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
+    private static bool ContainsJwt(string text)
+    {
+        const string headerPrefix = "eyJ";
+        var index = text.IndexOf(headerPrefix, StringComparison.Ordinal);
+        while (index >= 0)
+        {
+            var headerEnd = SkipBase64Url(text, index);
+            if (IsJwtTail(text, index, headerEnd))
+            {
+                return true;
+            }
+
+            // Any later "eyJ" inside this header shares the same tail, so skip past it.
+            index = text.IndexOf(headerPrefix, Math.Max(headerEnd, index + 1), StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
+    private static bool IsJwtTail(string text, int headerStart, int headerEnd)
+    {
+        if (headerEnd - headerStart < 10 || headerEnd >= text.Length || text[headerEnd] != '.')
+        {
+            return false;
+        }
+
+        var payloadStart = headerEnd + 1;
+        var payloadEnd = SkipBase64Url(text, payloadStart);
+        if (payloadEnd - payloadStart < 10
+            || !text.AsSpan(payloadStart).StartsWith("eyJ", StringComparison.Ordinal)
+            || payloadEnd >= text.Length
+            || text[payloadEnd] != '.')
+        {
+            return false;
+        }
+
+        var signatureStart = payloadEnd + 1;
+        return SkipBase64Url(text, signatureStart) - signatureStart >= 16;
+    }
+
+    private static int SkipBase64Url(string text, int index)
+    {
+        while (index < text.Length && IsTokenCharacter(text[index]))
+        {
+            index++;
+        }
+
+        return index;
+    }
+
+    private static bool ContainsKeywordHighEntropyValue(string text)
+    {
+        // Unquoted values end at '=' and ':'; quoted values end at their own quote character.
+        // So unquoted spans never overlap and each character sits in at most one quoted span
+        // per quote kind, which keeps the scan linear.
+        for (var index = 0; index < text.Length; index++)
+        {
+            if (text[index] is not ('=' or ':') || !HasSecretName(text, index))
+            {
+                continue;
+            }
+
+            var valueStart = SkipValuePrefix(text, index + 1, out var quote);
+            var valueEnd = valueStart;
+            while (valueEnd < text.Length && IsValueCharacter(text[valueEnd], quote))
+            {
+                // Inside quotes a backslash escapes the next character, so \" does not end the value.
+                if (quote != '\0'
+                    && text[valueEnd] == '\\'
+                    && valueEnd + 1 < text.Length
+                    && text[valueEnd + 1] is >= '!' and <= '~')
+                {
+                    valueEnd++;
+                }
+
+                valueEnd++;
+            }
+
+            if (IsHighEntropySecret(text.AsSpan(valueStart, valueEnd - valueStart)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasSecretName(string text, int separatorIndex)
+    {
+        var end = separatorIndex;
+        while (end > 0 && text[end - 1] is ' ' or '\t')
+        {
+            end--;
+        }
+
+        if (end > 0 && text[end - 1] is '"' or '\'')
+        {
+            end--;
+        }
+
+        var start = end;
+        while (start > 0 && end - start < MaxSecretNameLength && IsSecretNameCharacter(text[start - 1]))
+        {
+            start--;
+        }
+
+        var name = text.AsSpan(start, end - start);
+        if (name.IsEmpty || name.Contains("public", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        foreach (var keyword in SecretNameKeywords)
+        {
+            if (name.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int SkipValuePrefix(string text, int index, out char quote)
+    {
+        // Covers "a = b", "a := b", "a => b", and quoted values.
+        while (index < text.Length && text[index] is ' ' or '\t' or '=' or '>')
+        {
+            index++;
+        }
+
+        quote = '\0';
+        if (index < text.Length && text[index] is '"' or '\'' or '`')
+        {
+            quote = text[index];
+            index++;
+        }
+
+        foreach (var scheme in AuthorizationSchemes)
+        {
+            if (text.AsSpan(index).StartsWith(scheme, StringComparison.OrdinalIgnoreCase))
+            {
+                return index + scheme.Length;
+            }
+        }
+
+        return index;
+    }
+
+    private static bool IsHighEntropySecret(ReadOnlySpan<char> value)
+    {
+        if (value.Length < MinSecretValueLength)
+        {
+            return false;
+        }
+
+        Span<int> counts = stackalloc int[128];
+        bool hasUpper = false, hasLower = false, hasDigit = false, allHex = true;
+        foreach (var character in value)
+        {
+            counts[character]++;
+            hasUpper |= char.IsAsciiLetterUpper(character);
+            hasLower |= char.IsAsciiLetterLower(character);
+            hasDigit |= char.IsAsciiDigit(character);
+            allHex &= char.IsAsciiHexDigit(character);
+        }
+
+        // Paths, URLs, versions, and identifiers rarely mix all three classes; random keys do.
+        var looksRandom = allHex
+            ? hasDigit && (hasUpper || hasLower)
+            : hasUpper && hasLower && hasDigit;
+        if (!looksRandom)
+        {
+            return false;
+        }
+
+        double entropy = 0;
+        foreach (var count in counts)
+        {
+            if (count > 0)
+            {
+                var probability = (double)count / value.Length;
+                entropy -= probability * Math.Log2(probability);
+            }
+        }
+
+        // Short strings cannot exceed log2(length) bits per character, so scale the bar.
+        var alphabetSize = allHex ? 16 : 64;
+        return entropy >= MinEntropyRatio * Math.Log2(Math.Min(value.Length, alphabetSize));
+    }
+
+    private static bool IsTokenCharacter(char value) =>
+        IsAsciiAlphaNumeric(value) || value is '_' or '-';
+
+    private static bool IsSecretNameCharacter(char value) =>
+        IsAsciiAlphaNumeric(value) || value is '_' or '-' or '.';
+
+    // Printable ASCII only, so CJK text and whitespace end a value. Inside quotes, punctuation
+    // belongs to the secret and only the matching quote ends it.
+    private static bool IsValueCharacter(char value, char quote) =>
+        value is >= '!' and <= '~'
+        && (quote != '\0'
+            ? value != quote
+            : value is not ('"' or '\'' or '`' or ',' or ';' or '&' or '(' or ')' or '[' or ']'
+                or '{' or '}' or '<' or '>' or '=' or ':'));
 
     private static bool IsGitHubKind(char value) =>
         value is 'p' or 'o' or 'u' or 's' or 'r';

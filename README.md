@@ -237,9 +237,11 @@ Important limits:
 - Incoming phone-to-Windows text requires a Write-enabled pairing and is never
   applied automatically. Revoke, revoke all, expiry cleanup, and app exit clear the
   relevant incoming queue.
-- Sensitive detection is a guardrail, not data loss prevention. It covers PEM
-  private keys, GitHub classic and fine-grained tokens, and AWS `AKIA`/`ASIA`
-  access-key identifiers.
+- Sensitive detection is a guardrail, not data loss prevention. It covers PEM and
+  PGP private keys, GitHub classic and fine-grained tokens, AWS `AKIA`/`ASIA`
+  access-key identifiers, Slack, Stripe live, Google API, and `sk-` API keys,
+  JWTs, and high-entropy values assigned to names such as `secret`, `token`,
+  `password`, or `api_key`. Human-chosen passwords are not detected.
 - Windows may write process memory to pagefile, hibernation files, or crash dumps.
 - A compromised Windows machine, paired browser, or LAN invalidates the trust model.
 

@@ -1203,12 +1203,18 @@ public sealed class ClipboardApplicationContext :
         return baseUrl + "pair#code=" + Uri.EscapeDataString(pairingCode);
     }
 
-    private static string FormatSensitiveRule(string? rule) =>
+    internal static string FormatSensitiveRule(string? rule) =>
         rule switch
         {
             SensitiveTextClassifier.GitHubTokenRule => "GitHub token",
             SensitiveTextClassifier.AwsAccessKeyRule => "AWS access key",
-            SensitiveTextClassifier.PemPrivateKeyRule => "PEM private key",
+            SensitiveTextClassifier.PemPrivateKeyRule => "Private key",
+            SensitiveTextClassifier.SlackTokenRule => "Slack token",
+            SensitiveTextClassifier.StripeKeyRule => "Stripe live key",
+            SensitiveTextClassifier.GoogleApiKeyRule => "Google API key",
+            SensitiveTextClassifier.SkApiKeyRule => "API secret key (sk-)",
+            SensitiveTextClassifier.JwtRule => "JSON Web Token",
+            SensitiveTextClassifier.KeywordHighEntropyRule => "Secret-like value",
             null or "" => "Sensitive text",
             _ => rule,
         };
@@ -1311,7 +1317,7 @@ public sealed class ClipboardPipelineContentStore : IClipboardContentStore
             {
                 _pendingItems[result.Item.Id] = new PendingClipboardViewItem(
                     result.Item.Id,
-                    FormatPendingRule(result.SensitiveRule),
+                    ClipboardApplicationContext.FormatSensitiveRule(result.SensitiveRule),
                     ClipboardApplicationContext.MaskPreview(result.Item.Text),
                     result.Item.CapturedAtUtc);
             }
@@ -1364,16 +1370,6 @@ public sealed class ClipboardPipelineContentStore : IClipboardContentStore
             _pendingItems = [];
         }
     }
-
-    private static string FormatPendingRule(string? rule) =>
-        rule switch
-        {
-            SensitiveTextClassifier.GitHubTokenRule => "GitHub token",
-            SensitiveTextClassifier.AwsAccessKeyRule => "AWS access key",
-            SensitiveTextClassifier.PemPrivateKeyRule => "PEM private key",
-            null or "" => "Sensitive text",
-            _ => rule,
-        };
 }
 
 public sealed class PairingCodeProvider(PairingCodeManager pairingCodes) : IPairingCodeProvider
