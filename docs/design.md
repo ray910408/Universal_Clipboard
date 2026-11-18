@@ -308,6 +308,22 @@ high-confidence MVP rules:
   fine-grained personal access tokens using the `github_pat_` prefix.
 - AWS access-key identifiers matching long-term `AKIA` and temporary `ASIA`
   access-key prefixes.
+- PGP private-key armor blocks, using the same whole-line header/footer rule.
+- Prefixed service tokens: Slack `xox[baprse]-` style tokens (at least 20 payload
+  characters including a digit), Stripe live secret and restricted keys (at least 24),
+  Google API keys (exactly 35 after the four-character prefix), and `sk-` API keys
+  (at least 32, mixed case plus a digit, because `sk-` also occurs inside words). Each
+  prefix must start a token: the preceding character cannot be `[A-Za-z0-9_-]`.
+- JWTs: three base64url segments where the header and payload both start with the
+  encoded `{"` prefix and the signature has at least 16 characters.
+- Keyword plus entropy: a value after `=` or `:` whose name contains `key`, `secret`,
+  `token`, `passw`, `pwd`, `credential`, or `auth` (but not `public`). The value must
+  be printable ASCII, at least 16 characters, mix upper case, lower case, and digits
+  (or be hex with a digit and a letter), and have Shannon entropy of at least 0.75 of
+  `log2(min(length, alphabet))`, where the alphabet is 16 for hex and 64 otherwise.
+  The length-aware bar matters because a 20-character string cannot exceed 4.32 bits
+  per character. Entropy alone is not used: it cannot separate an AWS key identifier
+  from a git commit hash, and CJK text scores near its maximum.
 
 Both PEM markers must begin at the start of the text or immediately after `\n`.
 After the final hyphen, each marker must be followed by `\r\n`, `\n`, or end of text.
@@ -861,8 +877,8 @@ The MVP is complete only when all of these are true:
 8. Safari or Chrome either confirms standard Clipboard API success or visibly
    selects the exact text and instructs the user how to copy; failure is never
    silent.
-9. PEM private keys, GitHub-style tokens, and AWS access-key identifiers are withheld
-   until explicitly approved on Windows.
+9. Private keys, known service tokens, JWTs, and high-entropy values assigned to
+   secret-like names are withheld until explicitly approved on Windows.
 10. Inputs at 1,048,575 and 1,048,576 UTF-8 bytes are accepted; 1,048,577 bytes and
     unpaired surrogates are rejected without freezing either interface.
 11. All five requested authorization durations work, including server-side
